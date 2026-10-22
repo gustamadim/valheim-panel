@@ -702,7 +702,15 @@ button.btn.small { padding: 6px 13px; font-size: 13px; }
   font-size: 12px;
 }
 
-/* ---------- live map ---------- */
+/* The `hidden` attribute must win over any class that sets `display`.
+ * Author styles beat the UA stylesheet's `[hidden] { display: none }`, so a rule
+ * like `.mapmsg { display: grid }` silently un-hides a `hidden` element. That is
+ * how the map's message overlay ended up covering the canvas and swallowing every
+ * mouse event, which read as "pan and zoom are broken".
+ */
+[hidden] { display: none !important; }
+
+/* ---------- map ---------- */
 .mapbar {
   display: flex;
   align-items: center;
@@ -748,4 +756,5 @@ button.btn.small { padding: 6px 13px; font-size: 13px; }
   color: var(--dim);
   font-size: 14px;
   background: #0a0c12cc;
+  pointer-events: none;   /* never intercept map input, even when visible */
 }

@@ -1,8 +1,9 @@
 # Valheim Control Panel
 
 A self-hosted web panel for a Valheim dedicated server running in Docker. Built to
-sit *beside* an existing `lloesche/valheim-server` container — it does not replace
-it, does not move your world, and does not need the Docker socket.
+sit *beside* an existing [`community-valheim-tools/valheim-server`](https://github.com/community-valheim-tools/valheim-server-docker)
+container — it does not replace it, does not move your world, and does not need the
+Docker socket.
 
 ## Why this exists
 
@@ -42,8 +43,10 @@ It talks to the server over three channels that are already available:
 
 ## Requirements
 
-- A running `lloesche/valheim-server` (or the renamed
-  `community-valheim-tools/valheim-server`) container with `BEPINEX=true`
+- A running [`community-valheim-tools/valheim-server`](https://github.com/community-valheim-tools/valheim-server-docker)
+  container with `BEPINEX=true`. This project was formerly published as
+  `lloesche/valheim-server`; the old name still resolves to the same repository,
+  and older `ghcr.io/lloesche/valheim-server` tags still work.
 - Three server-side BepInEx plugins: `ValheimRcon`, `ValheimUI.Agent`,
   `ValheimUI.Gameplay`
 - Docker and Docker Compose

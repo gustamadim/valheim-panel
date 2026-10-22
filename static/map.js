@@ -36,6 +36,7 @@ const mapState = {
   layers: null,        // ImageData of the decoded layers
   fog: null,           // ImageData of the fog mask
   fogCanvas: null,
+  fogOverlay: null,    // cached canvas: fog painted for compositing
   styled: null,        // offscreen canvas holding the styled world
   styledSize: 0,
   view: { scale: 1, ox: 0, oy: 0 },   // pan/zoom in canvas pixels
@@ -129,6 +130,7 @@ function loadFog() {
       ctx.drawImage(img, 0, 0);
       mapState.fog = ctx.getImageData(0, 0, img.width, img.height);
       mapState.fogCanvas = c;
+      buildFogOverlay();
       resolve();
     };
     img.onerror = () => { mapState.fog = null; resolve(); };
@@ -278,6 +280,9 @@ function fitMap() {
   const cv = mapState.canvas;
   if (!cv) return;
   const rect = cv.getBoundingClientRect();
+  // A hidden view reports a zero-sized rect; sizing the canvas to that leaves a
+  // 1x1 bitmap and the map appears blank even after the tab becomes visible.
+  if (rect.width < 2 || rect.height < 2) return;
   const dpr = window.devicePixelRatio || 1;
   cv.width = Math.max(1, Math.floor(rect.width * dpr));
   cv.height = Math.max(1, Math.floor(rect.height * dpr));
@@ -294,6 +299,27 @@ function worldToScreen(x, z) {
   return [ox + u * scale, oy + v * scale];
 }
 
+/* Fog overlay is cached: rebuilding a 1M-pixel ImageData on every redraw made
+ * panning crawl, because drawMap() runs on each mousemove. It only changes when a
+ * new fog image is loaded. */
+function buildFogOverlay() {
+  if (!mapState.fog) { mapState.fogOverlay = null; return; }
+  const fw = mapState.fog.width, fh = mapState.fog.height;
+  const fd = mapState.fog.data;
+  const tmp = document.createElement('canvas');
+  tmp.width = fw; tmp.height = fh;
+  const tctx = tmp.getContext('2d');
+  const out = new ImageData(fw, fh);
+  const od = out.data;
+  for (let i = 0, p = 0; i < fd.length; i += 4, p += 4) {
+    const g = fd[i];
+    od[p] = 8; od[p + 1] = 10; od[p + 2] = 14;
+    od[p + 3] = Math.max(0, Math.min(255, g * 0.92));
+  }
+  tctx.putImageData(out, 0, 0);
+  mapState.fogOverlay = tmp;
+}
+
 function drawMap() {
   const cv = mapState.canvas, ctx = mapState.ctx;
   if (!cv || !ctx || !mapState.styled) return;
@@ -304,23 +330,10 @@ function drawMap() {
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(mapState.styled, ox, oy, scale, scale);
 
-  // Fog: 255 = unexplored, so paint it over the styled map.
-  if (mapState.showFog && mapState.fog) {
-    const fw = mapState.fog.width, fh = mapState.fog.height;
-    const fd = mapState.fog.data;
-    const tmp = document.createElement('canvas');
-    tmp.width = fw; tmp.height = fh;
-    const tctx = tmp.getContext('2d');
-    const out = new ImageData(fw, fh);
-    const od = out.data;
-    for (let i = 0, p = 0; i < fd.length; i += 4, p += 4) {
-      const g = fd[i];
-      od[p] = 8; od[p + 1] = 10; od[p + 2] = 14;
-      od[p + 3] = Math.max(0, Math.min(255, g * 0.92));
-    }
-    tctx.putImageData(out, 0, 0);
+  // Fog: 255 = unexplored, painted over the styled map from the cached overlay.
+  if (mapState.showFog && mapState.fogOverlay) {
     ctx.globalAlpha = 0.94;
-    ctx.drawImage(tmp, ox, oy, scale, scale);
+    ctx.drawImage(mapState.fogOverlay, ox, oy, scale, scale);
     ctx.globalAlpha = 1;
   }
 
