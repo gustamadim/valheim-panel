@@ -1,0 +1,12 @@
+# Secrets — never commit. Copy .env.example and fill in.
+panel.env
+*.env
+!.env.example
+
+# Local runtime state
+*.pyc
+__pycache__/
+*.bak
+*.bak-*
+deploy/joincode.sh.bak
+deploy/relay-roles.json

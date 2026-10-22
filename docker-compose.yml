@@ -1,0 +1,40 @@
+# Valheim control panel.
+#
+# network_mode: host is deliberate. The ValheimUI agent binds 127.0.0.1, and both
+# supervisor (:8088) and RCON (:25575) are host-loopback services. A bridge
+# network would need the agent's BindAddress rewritten plus three host-gateway
+# hops; host networking keeps all three plain 127.0.0.1 with no plugin patching.
+#
+# The panel still gets no Docker socket and no capabilities. The only privileged
+# read it depends on is deploy/hostprobe.sh, run by a systemd user timer on the
+# host, which writes /config/cache/hostprobe.json.
+
+services:
+  valheim-panel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: valheim-panel:local
+    container_name: valheim-panel
+    restart: unless-stopped
+    network_mode: host
+    # Run as the same uid/gid the game container uses (PUID/PGID=1000). The panel
+    # writes to /config (lists, backups, restores, its own SQLite), and the game's
+    # files are owned by 1000:1000 -- matching them keeps ownership consistent and
+    # avoids permission surprises on files both containers touch.
+    user: "1000:1000"
+    env_file:
+      - panel.env
+    volumes:
+      # The game's data dir: worlds, lists, backups, bepinex, and the probe file.
+      # Read-write because P3 adds list editing, backup restore and world swaps.
+      - /DATA/AppData/valheim-server/config:/config
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

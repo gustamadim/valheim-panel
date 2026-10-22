@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Valheim · FGR</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body data-csrf="__CSRF__" data-user="__USER__" data-role="__ROLE__">
+<header class="top">
+  <div class="brand">
+    <span class="dot" id="health-dot"></span>
+    <strong>FGR</strong>
+    <span class="sep">·</span>
+    <span class="muted" id="world-name">GunungpatiJaya</span>
+  </div>
+  <nav class="tabs">
+    <button class="tab active" data-view="dash">Dashboard</button>
+    <button class="tab" data-view="log">Log</button>
+    <button class="tab" data-view="world" id="tab-world" hidden>World</button>
+    <button class="tab" data-view="map" id="tab-map" hidden>Map</button>
+    <button class="tab" data-view="console" id="tab-console" hidden>Console</button>
+    <button class="tab" data-view="mods" id="tab-mods" hidden>Mods</button>
+    <button class="tab" data-view="manage" id="tab-manage" hidden>Manage</button>
+    <button class="tab" data-view="users" id="tab-users" hidden>Users</button>
+    <button class="tab" data-view="audit" id="tab-audit" hidden>Audit</button>
+  </nav>
+  <div class="who">
+    <span class="muted"><span id="who">__USER__</span>
+      <span class="rolebadge" id="role-badge">__ROLE__</span></span>
+    <button class="ghost" id="account-btn">Account</button>
+    <button class="ghost" id="logout">Sign out</button>
+  </div>
+</header>
+
+<main>
+  <!-- DASHBOARD -->
+  <section id="view-dash" class="view active">
+    <div class="grid">
+      <article class="card span2">
+        <h2>Join code</h2>
+        <div class="joincode">
+          <span id="joincode">—</span>
+          <span class="age muted" id="joincode-age"></span>
+        </div>
+        <p class="hint" id="joincode-hint"></p>
+      </article>
+
+      <article class="card">
+        <h2>Server</h2>
+        <dl class="kv">
+          <dt>State</dt><dd id="s-state">—</dd>
+          <dt>Uptime</dt><dd id="s-uptime">—</dd>
+          <dt>Version</dt><dd id="s-version">—</dd>
+          <dt>RAM</dt><dd id="s-ram">—</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <h2>World</h2>
+        <dl class="kv">
+          <dt>Day</dt><dd id="w-day">—</dd>
+          <dt>Time</dt><dd id="w-time">—</dd>
+          <dt>Weather</dt><dd id="w-weather">—</dd>
+          <dt>Last save</dt><dd id="w-save">—</dd>
+        </dl>
+      </article>
+
+      <article class="card span2">
+        <h2>Players <span class="count" id="p-count"></span></h2>
+        <div id="players" class="players"></div>
+      </article>
+
+      <article class="card span2">
+        <h2>Backups <span class="count" id="b-count"></span></h2>
+        <div class="cardactions" id="backup-actions" hidden>
+          <button class="ghost small" id="backup-now">Back up now</button>
+        </div>
+        <div id="backups" class="list"></div>
+      </article>
+
+      <article class="card span2">
+        <h2>Mods loaded</h2>
+        <div id="mods" class="chips"></div>
+      </article>
+
+      <article class="card span2" id="err-card" hidden>
+        <h2>Warnings</h2>
+        <div id="errors" class="errors"></div>
+      </article>
+    </div>
+  </section>
+
+  <!-- LOG -->
+  <section id="view-log" class="view">
+    <div class="logbar">
+      <div class="filters">
+        <label><input type="checkbox" data-filter="join" checked> joins</label>
+        <label><input type="checkbox" data-filter="leave" checked> leaves</label>
+        <label><input type="checkbox" data-filter="save" checked> saves</label>
+        <label><input type="checkbox" data-filter="mod" checked> mods</label>
+        <label><input type="checkbox" data-filter="error" checked> errors</label>
+        <label><input type="checkbox" data-filter="raw"> everything</label>
+      </div>
+      <div class="logactions">
+        <label class="follow"><input type="checkbox" id="follow" checked> follow</label>
+        <button class="ghost" id="clear-log">clear view</button>
+      </div>
+    </div>
+    <pre id="log" class="log"></pre>
+  </section>
+
+  <!-- WORLD -->
+  <section id="view-world" class="view">
+    <div class="grid">
+      <article class="card">
+        <h2>In-game</h2>
+        <dl class="kv">
+          <dt>Day</dt><dd id="lw-day">—</dd>
+          <dt>Time</dt><dd id="lw-time">—</dd>
+          <dt>Weather</dt><dd id="lw-weather">—</dd>
+          <dt>Active event</dt><dd id="lw-event">—</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <h2>Tracker</h2>
+        <dl class="kv">
+          <dt>Events stored</dt><dd id="lw-events">—</dd>
+          <dt>Deaths</dt><dd id="lw-deaths">—</dd>
+          <dt>Poller</dt><dd id="lw-poller">—</dd>
+        </dl>
+      </article>
+
+      <article class="card span2">
+        <h2>Players <span class="count" id="lw-pcount"></span></h2>
+        <div id="lw-players" class="players"></div>
+        <p class="hint" id="lw-poshint"></p>
+      </article>
+
+      <article class="card span2">
+        <h2>Progression</h2>
+        <div id="lw-keys" class="chips"></div>
+      </article>
+
+      <article class="card">
+        <h2>Death leaderboard</h2>
+        <div id="lw-deathboard" class="list"></div>
+      </article>
+
+      <article class="card">
+        <h2>Recent events</h2>
+        <div class="filters" style="margin-bottom:9px">
+          <label><input type="checkbox" id="ev-joins" checked> joins</label>
+          <label><input type="checkbox" id="ev-deaths" checked> deaths</label>
+          <label><input type="checkbox" id="ev-cmds" checked> commands</label>
+        </div>
+        <div id="lw-events-list" class="eventlist"></div>
+      </article>
+    </div>
+  </section>
+
+  <!-- MAP -->
+  <section id="view-map" class="view">
+    <div class="mapbar">
+      <div class="filters">
+        <label><input type="checkbox" id="map-fog" checked> fog</label>
+        <label><input type="checkbox" id="map-objects-toggle" checked> objects</label>
+        <label><input type="checkbox" id="map-players-toggle" checked> players</label>
+      </div>
+      <div class="mapstats">
+        <span>seed <b id="map-seed">—</b></span>
+        <span>explored <b id="map-explored">—</b></span>
+        <span>players <b id="map-players">—</b></span>
+        <span>objects <b id="map-objects">—</b></span>
+        <span>locations <b id="map-locations">—</b></span>
+        <span class="mono" id="map-hover"></span>
+        <button class="ghost small" id="map-reset">reset view</button>
+      </div>
+    </div>
+    <div class="mapwrap">
+      <canvas id="map-canvas"></canvas>
+      <div id="map-msg" class="mapmsg" hidden></div>
+    </div>
+    <p class="hint" id="map-fognote" hidden></p>
+    <p class="hint">
+      Drag to pan, scroll to zoom. The fog shows what players have actually explored —
+      the server reconstructs it from player positions and cartography tables, so it
+      fills in as people play.
+    </p>
+  </section>
+
+  <!-- CONSOLE -->
+  <section id="view-console" class="view">
+    <article class="card">
+      <h2>Players <span class="count" id="cp-count"></span></h2>
+      <div id="cp-list" class="players"></div>
+    </article>
+
+    <article class="card">
+      <h2>Quick commands</h2>
+      <div class="quickrow">
+        <input id="qc-message" type="text" placeholder="Message to all players…"
+               maxlength="240" autocomplete="off">
+        <button class="btn" id="qc-broadcast" hidden>Broadcast</button>
+        <button class="ghost" id="qc-say" hidden>Say in chat</button>
+        <button class="ghost" id="qc-save" hidden>Save</button>
+      </div>
+      <div class="formerr" id="qc-msg"></div>
+    </article>
+
+    <article class="card">
+      <h2>Run a command</h2>
+      <div class="quickrow">
+        <select id="cmd-select"></select>
+        <button class="btn" id="cmd-run">Run</button>
+      </div>
+      <div id="cmd-args" class="cmdargs"></div>
+      <div class="formerr" id="cmd-msg"></div>
+      <pre id="cmd-out" class="cmdout" hidden></pre>
+    </article>
+
+    <article class="card" id="freeform-card" hidden>
+      <h2>Free-form RCON <span class="tag bad">admin</span></h2>
+      <div class="quickrow">
+        <input id="ff-input" type="text" placeholder="e.g. serverStats" autocomplete="off">
+        <button class="ghost" id="ff-run">Send</button>
+      </div>
+      <p class="hint">
+        Sent straight to the server. Every line is audited. Destructive commands
+        (deleteObjects, modifyObject, consoleCommand) are blocked even here.
+      </p>
+      <div class="formerr" id="ff-msg"></div>
+    </article>
+
+    <article class="card">
+      <h2>Chat <span class="count" id="chat-count"></span></h2>
+      <div id="chat-list" class="chatlist"></div>
+      <p class="hint">Shouts and normal chat the server relayed. Whispers are never included.</p>
+    </article>
+  </section>
+
+  <!-- MODS -->
+  <section id="view-mods" class="view">
+    <article class="card" id="cp-banner" hidden></article>
+
+    <article class="card">
+      <h2>Installed <span class="count" id="mod-count"></span></h2>
+      <div id="mod-installed" class="modlist"></div>
+      <p class="hint" id="mod-unmanaged"></p>
+    </article>
+
+    <article class="card" id="mod-quarantine-card" hidden>
+      <h2>Quarantined</h2>
+      <div id="mod-quarantine" class="modlist"></div>
+    </article>
+
+    <article class="card">
+      <h2>Browse</h2>
+      <div class="quickrow">
+        <input id="mod-q" type="text" placeholder="Search packages…" autocomplete="off">
+        <select id="mod-store">
+          <option value="">both stores</option>
+          <option value="hexium">Hexium</option>
+          <option value="thunderstore">Thunderstore</option>
+        </select>
+        <label class="follow"><input type="checkbox" id="mod-serveronly"> server-only</label>
+        <button class="btn" id="mod-search">Search</button>
+      </div>
+      <div class="formerr" id="mod-search-msg"></div>
+      <div id="mod-results" class="modresults"></div>
+    </article>
+
+    <article class="card">
+      <h2>Import from URL</h2>
+      <div class="quickrow">
+        <input id="mod-url" type="text" placeholder="https://…/plugin.zip or .dll" autocomplete="off">
+        <input id="mod-url-name" type="text" placeholder="label (optional)" size="18" autocomplete="off">
+        <button class="ghost" id="mod-import">Import</button>
+      </div>
+      <p class="hint">
+        Fetched server-side, validated as a BepInEx archive, and imported as
+        unclassified. No auto-update for custom URLs.
+      </p>
+      <div class="formerr" id="mod-import-msg"></div>
+    </article>
+
+    <article class="card">
+      <h2>Config files</h2>
+      <div class="quickrow">
+        <select id="mod-cfg-select"></select>
+        <button class="ghost" id="mod-cfg-load">Open</button>
+        <button class="btn" id="mod-cfg-save" hidden>Save</button>
+      </div>
+      <textarea id="mod-cfg-text" class="cfgtext" hidden spellcheck="false"></textarea>
+      <div class="formerr" id="mod-cfg-msg"></div>
+    </article>
+
+    <article class="card" id="gp-card">
+      <h2>Gameplay helpers</h2>
+      <p class="hint" id="gp-hint">
+        Server-side tweaks from the Valheim UI Gameplay plugin. Changes apply live —
+        the plugin reloads its config on write, so no restart is needed.
+      </p>
+      <div id="gp-body" hidden>
+        <h4 class="ghead">Autofeed</h4>
+        <p class="hint">
+          Feeds hungry tamed animals from chests marked with a sign. Place a sign
+          reading the prefix below within the sign radius of a chest full of food.
+          Any unmodded client can place the sign — players install nothing.
+        </p>
+        <div class="gpform">
+          <label class="gpcheck"><input type="checkbox" id="gp-af-enabled"> Enabled</label>
+          <label class="gpcheck"><input type="checkbox" id="gp-af-debug"> Debug logging</label>
+          <div class="f"><label for="gp-af-prefix">Sign prefix</label>
+            <input id="gp-af-prefix" type="text" placeholder="feed"></div>
+          <div class="f"><label for="gp-af-signradius">Sign radius (m)</label>
+            <input id="gp-af-signradius" type="number" step="0.5" min="0.5" max="6"></div>
+          <div class="f"><label for="gp-af-range">Feed range (m)</label>
+            <input id="gp-af-range" type="number" step="1" min="1" max="100"></div>
+          <div class="f"><label for="gp-af-interval">Scan interval (s)</label>
+            <input id="gp-af-interval" type="number" step="5" min="5" max="600"></div>
+        </div>
+
+        <h4 class="ghead">Raid filter</h4>
+        <p class="hint">
+          Raids checked below never start on their own. The event command can still
+          start them deliberately.
+        </p>
+        <label class="gpcheck"><input type="checkbox" id="gp-raid-enabled"> Filter enabled</label>
+        <div id="gp-raids" class="raidgrid"></div>
+
+        <div class="btnrow">
+          <button class="btn" id="gp-save">Save (applies live)</button>
+        </div>
+        <div class="formerr" id="gp-msg"></div>
+        <p class="hint" id="gp-reload"></p>
+      </div>
+    </article>
+
+    <article class="card">
+      <h2>Rollback</h2>
+      <div id="mod-snapshots" class="list"></div>
+      <p class="hint">
+        A snapshot is taken automatically before every install and uninstall.
+        Restoring replaces the managed plugin set, then restart the server.
+      </p>
+    </article>
+  </section>
+
+  <!-- MANAGE -->
+  <section id="view-manage" class="view">
+    <article class="card">
+      <h2>Server control</h2>
+      <p class="hint" id="ctl-hint">
+        Restart saves the world and brings the server back in about a minute.
+        Players are disconnected either way.
+      </p>
+      <div class="btnrow" id="server-controls">
+        <button class="btn" data-action="restart" id="btn-restart" hidden>Restart</button>
+        <button class="btn danger" data-action="stop" id="btn-stop" hidden>Stop</button>
+        <button class="btn" data-action="start" id="btn-start" hidden>Start</button>
+        <button class="ghost" data-action="save" id="btn-save" hidden>Save now</button>
+      </div>
+      <div class="formerr" id="ctl-msg"></div>
+    </article>
+
+    <article class="card">
+      <h2>Player lists</h2>
+      <div class="listtabs">
+        <button class="ltab active" data-list="admin">Admin</button>
+        <button class="ltab" data-list="banned">Banned</button>
+        <button class="ltab" data-list="permitted">Permitted</button>
+      </div>
+      <div class="warnbox" id="list-warning" hidden></div>
+      <div class="listeditor">
+        <input id="list-input" type="text" placeholder="SteamID64 (17 digits)"
+               inputmode="numeric" autocomplete="off">
+        <button class="btn" id="list-add">Add</button>
+      </div>
+      <div class="formerr" id="list-msg"></div>
+      <div id="list-entries" class="list"></div>
+      <p class="hint" id="list-hint"></p>
+    </article>
+
+    <article class="card">
+      <h2>Worlds <span class="count" id="wcount"></span></h2>
+      <div id="world-list" class="list"></div>
+      <p class="hint">
+        Switching the active world needs a compose change, so it is not offered here.
+        Regenerate and delete require the server to be stopped.
+      </p>
+    </article>
+  </section>
+
+  <!-- USERS -->
+  <section id="view-users" class="view">
+    <article class="card">
+      <h2>Add user</h2>
+      <form id="user-form" class="inline-form" autocomplete="off">
+        <div class="f">
+          <label for="nu">Username</label>
+          <input id="nu" name="username" type="text" placeholder="e.g. indira" required>
+        </div>
+        <div class="f">
+          <label for="nr">Role</label>
+          <select id="nr" name="role">
+            <option value="user">user — read only</option>
+            <option value="mod">mod — talk, kick, backup</option>
+            <option value="admin">admin — everything</option>
+          </select>
+        </div>
+        <div class="f">
+          <label for="np">Password</label>
+          <input id="np" name="password" type="password" minlength="10"
+                 placeholder="min 10 characters" required>
+        </div>
+        <button type="submit">Create</button>
+      </form>
+      <div class="formerr" id="user-form-err"></div>
+    </article>
+
+    <article class="card">
+      <h2>Users <span class="count" id="u-count"></span></h2>
+      <div id="user-list" class="userlist"></div>
+    </article>
+
+    <article class="card">
+      <h2>Role capabilities</h2>
+      <div id="role-matrix" class="matrix"></div>
+    </article>
+  </section>
+
+  <!-- AUDIT -->
+  <section id="view-audit" class="view">
+    <article class="card">
+      <div class="auditbar">
+        <div class="filters">
+          <label>Actor <input id="af-actor" type="text" placeholder="any" size="10"></label>
+          <label>Action <input id="af-action" type="text" placeholder="e.g. user." size="12"></label>
+          <button class="ghost" id="af-apply">Filter</button>
+        </div>
+        <span class="muted" id="audit-count"></span>
+      </div>
+      <div id="audit-list" class="auditlist"></div>
+    </article>
+  </section>
+</main>
+
+<!-- ACCOUNT MODAL -->
+<dialog id="account-dialog">
+  <form method="dialog" class="modal">
+    <h3>Account</h3>
+    <p class="muted" id="acc-who"></p>
+    <h4>Change password</h4>
+    <label for="cp">Current password</label>
+    <input id="cp" type="password" autocomplete="current-password">
+    <label for="npw">New password</label>
+    <input id="npw" type="password" autocomplete="new-password" minlength="10">
+    <div class="formerr" id="acc-err"></div>
+    <menu>
+      <button value="cancel" class="ghost" type="submit">Close</button>
+      <button id="acc-save" value="save" type="button">Change password</button>
+    </menu>
+  </form>
+</dialog>
+
+<script src="/static/app.js"></script>
+<script src="/static/map.js"></script>
+</body>
+</html>
