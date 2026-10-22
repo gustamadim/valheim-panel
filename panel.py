@@ -1288,11 +1288,20 @@ class Handler(BaseHTTPRequestHandler):
         except MapError as exc:
             return self._json(502, {"error": str(exc), "layers_ready": False})
 
-        players = mapdata.players()
         is_admin = roles.can(session.role, "users.manage")
+
+        # An admin may ask to see the whole world regardless of exploration. The
+        # preference is per-request (?scope=all) so it cannot be silently sticky,
+        # and it is ignored for anyone who is not an admin.
+        query = parse_qs(urlparse(self.path).query)
+        want_all = (query.get("scope", [""])[0] or "").lower() == "all"
+        lift_fog = bool(is_admin and want_all)
+
+        players = mapdata.players()
         if not is_admin:
             # Same rule as /v1/world: a player hidden on the map keeps their
-            # position private, and a viewer has no need for it.
+            # position private. Mods may see players (they moderate them), so
+            # only the hidden-player case strips coordinates.
             for p in players:
                 if p.get("visible") is False:
                     p.pop("x", None); p.pop("y", None); p.pop("z", None)
@@ -1303,11 +1312,22 @@ class Handler(BaseHTTPRequestHandler):
         except MapError:
             objs = {"objects": [], "pins": [], "locations": []}
 
-        # Objects under unexplored fog are withheld from non-admins, matching the
-        # upstream manager: knowing where a portal is before finding it is a
-        # spoiler, not a convenience.
+        # Visibility is decided by the fog mask — the same data that darkens the
+        # map — rather than by the agent's per-object `explored` flag. That flag is
+        # unreliable: locations never set it, so every boss altar and trader was
+        # hidden even inside explored terrain. Sampling the mask means an icon is
+        # visible exactly when the ground under it is, which is what a viewer
+        # reasonably expects from a map that shows what the cartography tables know.
         def visible(o: dict) -> bool:
-            return bool(o.get("explored", True)) or is_admin
+            if lift_fog:
+                return True
+            x, z = o.get("x"), o.get("z")
+            if x is None or z is None:
+                return False
+            try:
+                return mapdata.explored_at(float(x), float(z))
+            except (TypeError, ValueError):
+                return False
 
         return self._json(200, {
             **meta,
@@ -1316,6 +1336,8 @@ class Handler(BaseHTTPRequestHandler):
             "pins": objs.get("pins") or [],
             "locations": [o for o in objs.get("locations") or [] if visible(o)],
             "can_see_all": is_admin,
+            "scope": "all" if lift_fog else "explored",
+            "fog_lifted": lift_fog,
         })
 
     def _map_image(self, session: auth.Session, which: str) -> None:

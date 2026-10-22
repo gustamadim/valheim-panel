@@ -23,6 +23,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from array import array
 from pathlib import Path
 
 from .agent import Agent, AgentError
@@ -42,6 +43,7 @@ class MapData:
         self._layers_key: str | None = None
         self._fog_key: str | None = None
         self._fog_stats: dict = {}
+        self._fog_grey: array | None = None
         self._objects: dict = {}
         self._objects_at = 0.0
 
@@ -127,6 +129,7 @@ class MapData:
         with self._lock:
             self._fog_key = str(seed)
             self._fog_stats = {}
+            self._fog_grey = None
         return data
 
     def fog_stats(self) -> dict:
@@ -159,6 +162,8 @@ class MapData:
                 "total_pixels": total,
                 "explored_percent": round(100.0 * explored / total, 2) if total else 0.0,
             }
+            with self._lock:
+                self._fog_grey = grey
         except (PngError, ValueError) as exc:
             stats = {"error": str(exc)}
 
@@ -173,6 +178,55 @@ class MapData:
         with self._lock:
             self._fog_stats = stats
         return dict(stats)
+
+    # ---- cartography sampling -------------------------------------------
+    def _fog_grid(self) -> tuple[int, int, array] | None:
+        """The fog mask as a flat grey array, loaded once per image."""
+        with self._lock:
+            if self._fog_grey is not None:
+                stats = self._fog_stats or {}
+                return (stats.get("width"), stats.get("height"), self._fog_grey)
+        try:
+            self.fog_stats()
+        except MapError:
+            return None
+        with self._lock:
+            if self._fog_grey is None:
+                return None
+            stats = self._fog_stats or {}
+            return (stats.get("width"), stats.get("height"), self._fog_grey)
+
+    def explored_at(self, x: float, z: float) -> bool:
+        """Is the terrain at world (x, z) revealed on the cartography tables?
+
+        This is the honest test for "may this viewer see this object": it asks the
+        same mask that darkens the map, so an icon is visible exactly when the
+        ground under it is. Gating on the agent's per-object `explored` flag
+        instead produced nonsense — locations never set it at all, so every boss
+        altar and trader was hidden even inside explored terrain.
+        """
+        grid = self._fog_grid()
+        if grid is None:
+            return False
+        gw, gh, grey = grid
+        if not gw or not gh:
+            return False
+
+        R = 10500.0
+        try:
+            info = self.info()
+            R = float(info.get("world_radius") or R)
+        except MapError:
+            pass
+
+        u = (x + R) / (2 * R)
+        v = (R - z) / (2 * R)
+        if not (0.0 <= u <= 1.0 and 0.0 <= v <= 1.0):
+            return False
+
+        px = min(gw - 1, max(0, int(u * gw)))
+        py = min(gh - 1, max(0, int(v * gh)))
+        return grey[py * gw + px] < 128
 
     # ---- objects ---------------------------------------------------------
     def objects(self, max_age: float = 15.0) -> dict:

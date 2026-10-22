@@ -758,3 +758,32 @@ button.btn.small { padding: 6px 13px; font-size: 13px; }
   background: #0a0c12cc;
   pointer-events: none;   /* never intercept map input, even when visible */
 }
+
+/* ---------- map toolbar extras ---------- */
+.textsize, .scope {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.textsize b {
+  min-width: 3.6em;
+  text-align: center;
+  font-weight: 600;
+  font-size: 11.5px;
+  color: var(--ink);
+}
+.textsize button, .scope button {
+  padding: 2px 8px;
+  line-height: 1.2;
+  font-size: 13px;
+}
+.textsize button:disabled { opacity: .3; cursor: not-allowed; }
+.scope label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--dim);
+  cursor: pointer;
+}
+.scope input[type="checkbox"] { cursor: pointer; }

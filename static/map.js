@@ -47,9 +47,23 @@ const mapState = {
   showFog: true,
   showObjects: true,
   showPlayers: true,
+  scopeAll: false,     // admin only: lift fog and show the whole world
+  scopeInitialised: false,
+  textStep: 0,         // index into TEXT_STEPS
   ready: false,
   hover: null,
 };
+
+/* Label size steps. The old fixed 10/11px is the smallest entry, so nothing that
+ * already looked right gets bigger unless the viewer asks. */
+const TEXT_STEPS = [
+  { name: 'small',   scale: 1.0 },
+  { name: 'normal',  scale: 1.3 },
+  { name: 'large',   scale: 1.7 },
+  { name: 'x-large', scale: 2.2 },
+];
+const TEXT_STORE_KEY = 'valheim-panel.mapTextStep';
+const SCOPE_STORE_KEY = 'valheim-panel.mapScopeAll';
 
 let mapInitDone = false;
 
@@ -140,7 +154,10 @@ function loadFog() {
 
 async function refreshMapEntities() {
   try {
-    const r = await fetch('/api/v1/map', { cache: 'no-store' });
+    // `scope=all` is only honoured for admins; the server ignores it otherwise,
+    // so sending it unconditionally would be safe but misleading in the URL.
+    const qs = mapState.scopeAll ? '?scope=all' : '';
+    const r = await fetch('/api/v1/map' + qs, { cache: 'no-store' });
     if (!r.ok) return;
     const d = await r.json();
     mapState.players = d.players || [];
@@ -148,6 +165,34 @@ async function refreshMapEntities() {
     mapState.locations = d.locations || [];
     mapState.pins = d.pins || [];
     mapState.meta = { ...mapState.meta, ...d };
+
+    // The scope switch is an admin affordance; hide it for everyone else rather
+    // than showing a control that would be silently ignored.
+    const wrap = document.getElementById('map-scope-wrap');
+    if (wrap) wrap.hidden = !d.can_see_all;
+    const cb = document.getElementById('map-scope-all');
+    if (cb) cb.checked = !!d.fog_lifted;
+
+    // Admins keep seeing the whole world by default — that is the behaviour the
+    // panel had before the explored-only scope existed. An explicit choice is
+    // remembered per browser, so switching to "explored" sticks.
+    if (d.can_see_all && !mapState.scopeInitialised) {
+      mapState.scopeInitialised = true;
+      let saved = null;
+      try { saved = localStorage.getItem(SCOPE_STORE_KEY); } catch (_) {}
+      if (saved === null) {
+        mapState.scopeAll = true;
+        if (cb) cb.checked = true;
+        await refreshMapEntities();
+        return;
+      }
+      mapState.scopeAll = saved === 'true';
+      if (cb) cb.checked = mapState.scopeAll;
+      if (mapState.scopeAll !== !!d.fog_lifted) {
+        await refreshMapEntities();
+        return;
+      }
+    }
   } catch (_) { /* keep previous */ }
 }
 
@@ -187,11 +232,17 @@ function buildStyled() {
       let cr = b.color[0], cg = b.color[1], cb = b.color[2];
 
       // Ocean and off-world: depth-shade by how far below sea level.
+      // Water: a clear blue ramp so it reads as water at a glance and stays
+      // distinct from every land biome. Shallow water is a light teal, deepening
+      // to navy, with a pale shoreline band just above sea level.
       if (biome === 9) {
         const depth = Math.min(1, Math.max(0, (sea - hgt) / 120));
-        cr = 26 + depth * 30;
-        cg = 52 + depth * 46;
-        cb = 88 + depth * 60;
+        // shallow (86,160,196) -> deep (14,34,76)
+        cr = 86 - depth * 72;
+        cg = 160 - depth * 126;
+        cb = 196 - depth * 120;
+        // Keep a hint of blue even in the deepest trench.
+        cb = Math.max(70, cb);
       } else if (biome === 0 || biome === 15) {
         cr = 10; cg = 12; cb = 18;
       } else {
@@ -203,6 +254,15 @@ function buildStyled() {
         if (biome === 4 && hgt > 150) {
           const t = Math.min(1, (hgt - 150) / 90);
           cr += (232 - cr) * t; cg += (238 - cg) * t; cb += (244 - cb) * t;
+        }
+
+        // Beach band: the first few metres above sea level read as sand, which
+        // makes the coastline legible against both water and grass.
+        if (hgt >= sea && hgt < sea + 6) {
+          const t = 1 - (hgt - sea) / 6;
+          cr += (206 - cr) * t * 0.85;
+          cg += (192 - cg) * t * 0.85;
+          cb += (142 - cb) * t * 0.85;
         }
 
         // Hill shading, lit from the north-west, central differences.
@@ -346,8 +406,14 @@ function drawMap() {
   }
 }
 
+function textScale() {
+  const step = TEXT_STEPS[mapState.textStep] || TEXT_STEPS[0];
+  return step.scale;
+}
+
 function drawObjects(ctx) {
   const dpr = window.devicePixelRatio || 1;
+  const ts = textScale();
   const draw = (list, color, radius, label) => {
     list.forEach(o => {
       if (o.x == null || o.z == null) return;
@@ -360,9 +426,16 @@ function drawObjects(ctx) {
       ctx.lineWidth = 1 * dpr;
       ctx.stroke();
       if (label && mapState.view.scale > 900 * dpr) {
-        ctx.font = `${10 * dpr}px ui-monospace, monospace`;
-        ctx.fillStyle = '#e8e0d2';
-        ctx.fillText(o.text || o.label || '', sx + 6 * dpr, sy + 3 * dpr);
+        const text = o.text || o.label || '';
+        if (!text) return;
+        ctx.font = `${10 * ts * dpr}px ui-monospace, monospace`;
+        // Halo first, then the text: labels sit on terrain of any colour, and a
+        // thin dark outline is what keeps them readable over snow and water.
+        ctx.lineWidth = 3 * dpr;
+        ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+        ctx.strokeText(text, sx + 6 * ts * dpr, sy + 3 * ts * dpr);
+        ctx.fillStyle = '#f2ece0';
+        ctx.fillText(text, sx + 6 * ts * dpr, sy + 3 * ts * dpr);
       }
     });
   };
@@ -379,6 +452,7 @@ function drawObjects(ctx) {
 
 function drawPlayers(ctx) {
   const dpr = window.devicePixelRatio || 1;
+  const ts = textScale();
   mapState.players.forEach(p => {
     if (p.x == null || p.z == null) return;
     const [sx, sy] = worldToScreen(p.x, p.z);
@@ -391,11 +465,15 @@ function drawPlayers(ctx) {
     ctx.lineWidth = 2 * dpr;
     ctx.stroke();
 
-    ctx.font = `600 ${11 * dpr}px ui-sans-serif, system-ui, sans-serif`;
-    ctx.fillStyle = '#000000';
-    ctx.fillText(p.name || '?', sx + 9 * dpr + 1, sy + 4 * dpr + 1);
+    const label = p.name || '?';
+    const x = sx + 9 * ts * dpr;
+    const y = sy + 4 * ts * dpr;
+    ctx.font = `600 ${11 * ts * dpr}px ui-sans-serif, system-ui, sans-serif`;
+    ctx.lineWidth = 3.5 * dpr;
+    ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+    ctx.strokeText(label, x, y);
     ctx.fillStyle = '#f4ecdf';
-    ctx.fillText(p.name || '?', sx + 9 * dpr, sy + 4 * dpr);
+    ctx.fillText(label, x, y);
   });
 }
 
@@ -493,6 +571,49 @@ function bindMapControls() {
 
   const reset = document.getElementById('map-reset');
   if (reset) reset.addEventListener('click', () => { fitMap(); drawMap(); });
+
+  // ---- text size ----
+  const applyTextStep = () => {
+    const step = TEXT_STEPS[mapState.textStep] || TEXT_STEPS[0];
+    const label = document.getElementById('map-text-label');
+    if (label) label.textContent = step.name;
+    const smaller = document.getElementById('map-text-smaller');
+    const bigger = document.getElementById('map-text-bigger');
+    if (smaller) smaller.disabled = mapState.textStep <= 0;
+    if (bigger) bigger.disabled = mapState.textStep >= TEXT_STEPS.length - 1;
+    try { localStorage.setItem(TEXT_STORE_KEY, String(mapState.textStep)); } catch (_) {}
+    drawMap();
+  };
+
+  const smaller = document.getElementById('map-text-smaller');
+  if (smaller) smaller.addEventListener('click', () => {
+    mapState.textStep = Math.max(0, mapState.textStep - 1);
+    applyTextStep();
+  });
+  const bigger = document.getElementById('map-text-bigger');
+  if (bigger) bigger.addEventListener('click', () => {
+    mapState.textStep = Math.min(TEXT_STEPS.length - 1, mapState.textStep + 1);
+    applyTextStep();
+  });
+
+  // Restore the viewer's last choice.
+  try {
+    const saved = parseInt(localStorage.getItem(TEXT_STORE_KEY) || '0', 10);
+    if (!Number.isNaN(saved)) {
+      mapState.textStep = Math.max(0, Math.min(TEXT_STEPS.length - 1, saved));
+    }
+  } catch (_) {}
+  applyTextStep();
+
+  // ---- admin scope ----
+  const scopeAll = document.getElementById('map-scope-all');
+  if (scopeAll) scopeAll.addEventListener('change', async e => {
+    mapState.scopeAll = e.target.checked;
+    try { localStorage.setItem(SCOPE_STORE_KEY, String(mapState.scopeAll)); } catch (_) {}
+    await refreshMapEntities();
+    drawMap();
+    updateMapStats();
+  });
 }
 
 function setMapHover(text) {

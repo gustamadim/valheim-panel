@@ -175,6 +175,15 @@
         <span>objects <b id="map-objects">—</b></span>
         <span>locations <b id="map-locations">—</b></span>
         <span class="mono" id="map-hover"></span>
+        <span class="scope" id="map-scope-wrap" hidden>
+          <label><input type="checkbox" id="map-scope-all"> show all</label>
+        </span>
+        <span class="textsize">
+          <span class="muted">text</span>
+          <button class="ghost small" id="map-text-smaller" title="smaller labels">−</button>
+          <b id="map-text-label">small</b>
+          <button class="ghost small" id="map-text-bigger" title="larger labels">+</button>
+        </span>
         <button class="ghost small" id="map-reset">reset view</button>
       </div>
     </div>
@@ -184,9 +193,9 @@
     </div>
     <p class="hint" id="map-fognote" hidden></p>
     <p class="hint">
-      Drag to pan, scroll to zoom. The fog shows what players have actually explored —
-      the server reconstructs it from player positions and cartography tables, so it
-      fills in as people play.
+      Drag to pan, scroll to zoom. The fog shows what the cartography tables and
+      player positions actually reveal — so it fills in as people play and share
+      their maps.
     </p>
   </section>
 
