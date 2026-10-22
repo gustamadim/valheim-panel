@@ -42,6 +42,7 @@ class MapData:
         self._lock = threading.Lock()
         self._layers_key: str | None = None
         self._fog_key: str | None = None
+        self._fog_version: int | None = None
         self._fog_stats: dict = {}
         self._fog_grey: array | None = None
         self._objects: dict = {}
@@ -110,8 +111,20 @@ class MapData:
         seed = info.get("seed")
         path = self.cache_dir / f"fog-{seed}.png"
 
+        # Ask the agent for its current mask version before trusting the cache.
+        # Without this the first fog image was returned forever: the old check
+        # compared only the seed, which never changes for a given world, so the
+        # fog never refreshed while players explored.
+        version = None
+        try:
+            vinfo = self.agent.map_explored_info()
+            version = vinfo.get("mask_version", vinfo.get("version"))
+        except AgentError:
+            version = None
+
         with self._lock:
-            if path.is_file() and self._fog_key == str(seed):
+            if (path.is_file() and self._fog_key == str(seed)
+                    and version is not None and self._fog_version == version):
                 return path.read_bytes()
 
         data = self._fetch("/v1/map/explored")
@@ -128,15 +141,30 @@ class MapData:
 
         with self._lock:
             self._fog_key = str(seed)
+            self._fog_version = version
             self._fog_stats = {}
             self._fog_grey = None
         return data
 
     def fog_stats(self) -> dict:
-        """Explored share. Computed once per fog image, not per request."""
+        """Explored share, recomputed whenever the agent's mask version moves.
+
+        The in-memory shortcut is only valid while the mask is unchanged. Returning
+        it unconditionally made the reported percentage stick at whatever it was
+        when the panel last restarted, even as the fog image itself refreshed.
+        """
         with self._lock:
-            if self._fog_stats:
-                return dict(self._fog_stats)
+            cached = dict(self._fog_stats) if self._fog_stats else None
+
+        if cached is not None:
+            try:
+                vinfo = self.agent.map_explored_info()
+                version = vinfo.get("mask_version", vinfo.get("version"))
+            except AgentError:
+                version = None
+            with self._lock:
+                if version is None or version == self._fog_version:
+                    return cached
 
         data = self.fog_png()
         digest = hashlib.sha256(data).hexdigest()[:16]

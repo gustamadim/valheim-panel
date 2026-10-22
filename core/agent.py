@@ -75,6 +75,10 @@ class Agent:
     def map_explored(self) -> dict:
         return self._request("/v1/map/explored")
 
+    def map_explored_info(self) -> dict:
+        """Fog metadata: version, mask_version, explored share, updated_at."""
+        return self._request("/v1/map/explored/info")
+
     # ---- commands (structured; preferred over RCON for these) ------------
     def command(self, name: str, **kwargs) -> dict:
         return self._request(f"/v1/commands/{urllib.parse.quote(name)}",
