@@ -133,6 +133,15 @@ function loadLayerImage() {
   });
 }
 
+function fogSignature(data) {
+  // Sampled hash: the poller re-fetches fog every 5s but the mask only moves
+  // when the agent's cartography data does. Comparing bytes skips a 4M-pixel
+  // overlay rebuild (blur included) on every poll.
+  let h = 0;
+  for (let i = 0; i < data.data.length; i += 4096) h = (h * 31 + data.data[i]) | 0;
+  return h;
+}
+
 function loadFog() {
   return new Promise((resolve) => {
     const img = new Image();
@@ -142,8 +151,12 @@ function loadFog() {
       c.height = img.height;
       const ctx = c.getContext('2d', { willReadFrequently: true });
       ctx.drawImage(img, 0, 0);
-      mapState.fog = ctx.getImageData(0, 0, img.width, img.height);
+      const data = ctx.getImageData(0, 0, img.width, img.height);
       mapState.fogCanvas = c;
+      const sig = fogSignature(data);
+      if (sig === mapState._fogSig) { resolve(); return; }
+      mapState._fogSig = sig;
+      mapState.fog = data;
       buildFogOverlay();
       resolve();
     };
@@ -361,9 +374,14 @@ const ZOOM_MIN = 120, ZOOM_MAX = 40000, ZOOM_WHEEL = 1.12, ZOOM_BUTTON = 1.3;
 function updateZoomLabel() {
   const lab = document.getElementById('map-zoom-level');
   const v = mapState.view;
-  if (!lab || !v.scale) return;
+  if (!v.scale) return;
   const fit = mapState.fitScale || v.scale;
-  lab.textContent = Math.max(1, Math.round((v.scale / fit) * 100)) + '%';
+  if (lab) lab.textContent = Math.max(1, Math.round((v.scale / fit) * 100)) + '%';
+  const dpr = window.devicePixelRatio || 1;
+  const zout = document.getElementById('map-zoom-out');
+  const zin = document.getElementById('map-zoom-in');
+  if (zout) zout.disabled = v.scale <= ZOOM_MIN * dpr * 1.01;
+  if (zin) zin.disabled = v.scale >= ZOOM_MAX * dpr * 0.99;
 }
 
 function zoomAt(mx, my, factor) {
@@ -382,6 +400,27 @@ function zoomCenter(factor) {
   const cv = mapState.canvas;
   if (!cv) return;
   zoomAt(cv.width / 2, cv.height / 2, factor);
+}
+
+/* Hover detail: biome name from the decoded layers, plus an "unexplored"
+ * flag from the fog mask. Both are already in the browser, so sampling one
+ * pixel per mousemove is free. */
+function hoverTerrain(u, vv) {
+  const parts = [];
+  const L = mapState.layers;
+  if (L) {
+    const px = Math.min(L.width - 1, Math.max(0, Math.floor(u * L.width)));
+    const py = Math.min(L.height - 1, Math.max(0, Math.floor(vv * L.height)));
+    const b = BIOME[L.data[(py * L.width + px) * 4] & 0x0F];
+    if (b && b.name !== 'Off-world' && b.name !== 'Edge') parts.push(b.name);
+  }
+  const F = mapState.fog;
+  if (F) {
+    const fx = Math.min(F.width - 1, Math.max(0, Math.floor(u * F.width)));
+    const fy = Math.min(F.height - 1, Math.max(0, Math.floor(vv * F.height)));
+    if (F.data[(fy * F.width + fx) * 4] >= 128) parts.push('unexplored');
+  }
+  return parts.length ? ' · ' + parts.join(' · ') : '';
 }
 
 function worldToScreen(x, z) {
@@ -410,7 +449,72 @@ function buildFogOverlay() {
     od[p + 3] = Math.max(0, Math.min(255, g * 0.92));
   }
   tctx.putImageData(out, 0, 0);
-  mapState.fogOverlay = tmp;
+  // Soften the exploration boundary. A hard pixel line reads as a rendering
+  // artifact; a gentle blur reads as the edge of a cartography table's reach.
+  // Baked once here so the per-frame composite stays a plain drawImage.
+  const soft = document.createElement('canvas');
+  soft.width = fw; soft.height = fh;
+  const sctx = soft.getContext('2d');
+  sctx.filter = 'blur(2px)';
+  sctx.drawImage(tmp, 0, 0);
+  mapState.fogOverlay = soft;
+}
+
+function roundRectPath(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+/* Scale bar: meters per pixel follow from the view scale and the world radius.
+ * Pick the largest "nice" length that fits the target width so the bar stays
+ * meaningful at every zoom, from 50 m up close to 250 km zoomed all the way
+ * out. */
+function drawScaleBar(ctx, cv) {
+  const R = mapState.meta?.world_radius || 10500;
+  const v = mapState.view;
+  if (!v.scale || !mapState.styled) return;
+  const dpr = window.devicePixelRatio || 1;
+  const mpp = (2 * R) / v.scale;
+  const target = 110 * dpr;
+  const nice = [50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000,
+                100000, 250000];
+  let len = nice[0];
+  for (const n of nice) { if (n / mpp <= target * 1.6) len = n; else break; }
+  const w = Math.max(24 * dpr, len / mpp);
+  const label = len >= 1000 ? (len / 1000) + ' km' : len + ' m';
+  ctx.font = `${11 * dpr}px ui-sans-serif, system-ui, sans-serif`;
+  const tw = ctx.measureText(label).width;
+  const pad = 7 * dpr, bh = 4 * dpr, chipH = 20 * dpr;
+  const x0 = 12 * dpr, y0 = cv.height - chipH - 12 * dpr;
+  const chipW = w + 6 * dpr + tw + pad * 2;
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(8, 10, 14, 0.62)';
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.14)';
+  ctx.lineWidth = 1 * dpr;
+  roundRectPath(ctx, x0, y0, chipW, chipH, 5 * dpr);
+  ctx.fill();
+  ctx.stroke();
+
+  const ly = y0 + chipH / 2;
+  const lx = x0 + pad;
+  ctx.strokeStyle = '#f4ecdf';
+  ctx.beginPath();
+  ctx.moveTo(lx, ly - bh);
+  ctx.lineTo(lx, ly + bh / 2);
+  ctx.moveTo(lx, ly);
+  ctx.lineTo(lx + w, ly);
+  ctx.moveTo(lx + w, ly - bh);
+  ctx.lineTo(lx + w, ly + bh / 2);
+  ctx.stroke();
+  ctx.fillStyle = '#f4ecdf';
+  ctx.fillText(label, lx + w + 6 * dpr, ly + 3.5 * dpr);
+  ctx.restore();
 }
 
 function drawMap() {
@@ -437,6 +541,8 @@ function drawMap() {
   if (mapState.showPlayers) {
     drawPlayers(ctx);
   }
+
+  drawScaleBar(ctx, cv);
 }
 
 function textScale() {
@@ -520,6 +626,8 @@ function updateMapStats() {
   set('map-explored', fog.explored_percent != null ? fog.explored_percent + '%' : '—');
   set('map-objects', (mapState.objects || []).length);
   set('map-locations', (mapState.locations || []).length);
+  const eb = document.getElementById('map-explored-bar');
+  if (eb) eb.style.width = (fog.explored_percent != null ? fog.explored_percent : 0) + '%';
 }
 
 /* ---------- interaction ---------- */
@@ -576,7 +684,7 @@ function bindMapControls() {
     }
     const x = u * 2 * R - R;
     const z = R - vv * 2 * R;
-    setMapHover(`${Math.round(x)}, ${Math.round(z)}`);
+    setMapHover(`${Math.round(x)}, ${Math.round(z)}${hoverTerrain(u, vv)}`);
   });
 
   cv.style.cursor = 'grab';

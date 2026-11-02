@@ -759,6 +759,39 @@ button.btn.small { padding: 6px 13px; font-size: 13px; }
   pointer-events: none;   /* never intercept map input, even when visible */
 }
 
+/* map legend + explored bar */
+.maplegend {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  max-width: 60%;
+  padding: 6px 10px;
+  background: rgba(8, 10, 14, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--dim);
+  pointer-events: none;   /* same rule as .mapmsg: never eat map input */
+}
+.maplegend span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.maplegend .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.maplegend .dot.player { background: #fff; border: 2px solid #d8a24a; width: 6px; height: 6px; }
+.maplegend .dot.fog { background: #080a0e; border: 1px solid rgba(255, 255, 255, 0.4); }
+
+.explbar {
+  display: inline-block;
+  width: 54px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.10);
+  border-radius: 3px;
+  overflow: hidden;
+  vertical-align: middle;
+}
+.explbar i { display: block; height: 100%; width: 0; background: var(--good); }
+
 /* ---------- map toolbar extras ---------- */
 .textsize, .scope {
   display: inline-flex;

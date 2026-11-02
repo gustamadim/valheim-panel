@@ -170,7 +170,7 @@
       </div>
       <div class="mapstats">
         <span>seed <b id="map-seed">—</b></span>
-        <span>explored <b id="map-explored">—</b></span>
+        <span>explored <b id="map-explored">—</b> <span class="explbar"><i id="map-explored-bar"></i></span></span>
         <span>players <b id="map-players">—</b></span>
         <span>objects <b id="map-objects">—</b></span>
         <span>locations <b id="map-locations">—</b></span>
@@ -196,6 +196,14 @@
     <div class="mapwrap">
       <canvas id="map-canvas"></canvas>
       <div id="map-msg" class="mapmsg" hidden></div>
+      <div class="maplegend" id="map-legend" title="Map legend">
+        <span><i class="dot" style="background:#d8a24a"></i>location</span>
+        <span><i class="dot" style="background:#6aa9d8"></i>pin</span>
+        <span><i class="dot" style="background:#b48ead"></i>portal</span>
+        <span><i class="dot" style="background:#8a8f98"></i>object</span>
+        <span><i class="dot player"></i>player</span>
+        <span><i class="dot fog"></i>unexplored</span>
+      </div>
     </div>
     <p class="hint" id="map-fognote" hidden></p>
     <p class="hint">
