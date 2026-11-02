@@ -35,6 +35,8 @@ RCON_ALLOWLIST: set[str] = {
     # player interaction
     "say", "showMessage", "kick", "ban", "unban", "heal", "damage",
     "give", "teleport", "disconnectAll",
+    # world
+    "spawn",
     # lists
     "addAdmin", "removeAdmin", "addPermitted", "removePermitted",
     # world / events
@@ -60,6 +62,14 @@ class CommandSpec:
     summary: str
     args: tuple[str, ...] = ()
     dangerous: bool = False
+    # Optional flag arguments, rendered as `-name value`. ValheimRcon parses
+    # these with a regex; a bare positional number is *ignored* by the plugin,
+    # which is exactly how quantity/quality used to get lost.
+    options: tuple[str, ...] = ()
+    # True when args[0] is a player reference. The plugin resolves players by
+    # name or `Steam_<id>` only — a bare numeric steamid fails with
+    # "Cannot find user" — so the renderer normalises bare ids.
+    player_arg: bool = False
 
 
 CATALOG: tuple[CommandSpec, ...] = (
@@ -78,15 +88,25 @@ CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("unban", "player.ban", "agent",
                 "Lift a ban", ("player",)),
     CommandSpec("heal", "player.give", "rcon",
-                "Restore a player's health", ("steamid", "value")),
+                "Restore a player's health", ("player", "value"), player_arg=True),
     CommandSpec("damage", "player.give", "rcon",
-                "Damage a player", ("steamid", "amount"), dangerous=True),
+                "Damage a player", ("player", "amount"), player_arg=True,
+                dangerous=True),
     CommandSpec("give", "player.give", "rcon",
-                "Spawn an item on a player", ("steamid", "item", "count")),
+                "Give a player items (count, quality, variant)",
+                ("player", "item"), options=("count", "quality", "variant"),
+                player_arg=True),
     CommandSpec("teleport", "player.teleport", "rcon",
-                "Teleport a player to coordinates", ("x", "y", "z"), dangerous=True),
+                "Teleport a player to coordinates", ("player", "x", "y", "z"),
+                player_arg=True, dangerous=True),
     CommandSpec("disconnectAll", "player.kick", "rcon",
                 "Disconnect everyone", (), dangerous=True),
+    # ValheimRcon's spawn is a world-object spawner at coordinates, not an
+    # item giver: `spawn <prefab> <x> <y> <z> [-count n] [-level n]`.
+    CommandSpec("spawn", "world.spawn", "rcon",
+                "Spawn objects in the world at coordinates",
+                ("prefab", "x", "y", "z"), options=("count", "level"),
+                dangerous=True),
     # --- world -----------------------------------------------------------
     CommandSpec("save", "server.restart", "agent", "Save the world now"),
     # RCON, not the agent: the agent's /v1/commands/time is a *setter* (it requires
@@ -111,7 +131,7 @@ CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("globalKeys", "view.worlds", "rcon", "World progression keys"),
     CommandSpec("eventsList", "view.worlds", "rcon", "All random events"),
     CommandSpec("findPlayer", "view.players", "rcon",
-                "Look up a player by name or id", ("query",)),
+                "Look up a player by name or id", ("query",), player_arg=True),
 )
 
 CATALOG_BY_NAME = {c.name: c for c in CATALOG}
@@ -189,16 +209,27 @@ class CommandRunner:
         a quote would otherwise split into extra RCON arguments.
         """
         parts = [spec.name]
-        for key in spec.args:
+        for i, key in enumerate(spec.args):
             value = args.get(key)
             if value is None or str(value).strip() == "":
                 if spec.args == ("query",):
                     raise CommandError(f"missing {key}")
                 # Optional trailing args are allowed to be absent.
-                if key in ("count", "value", "amount"):
+                if key in ("value", "amount"):
                     continue
                 raise CommandError(f"missing {key}")
-            parts.append(_sanitize(str(value)))
+            text = _sanitize(str(value))
+            if spec.player_arg and i == 0:
+                text = _player_ref(text)
+            _check_numeric(key, text)
+            parts.append(text)
+        for key in spec.options:
+            value = args.get(key)
+            if value is None or str(value).strip() == "":
+                continue
+            text = _sanitize(str(value))
+            _check_numeric(key, text)
+            parts.extend((f"-{key}", text))
         return " ".join(parts)
 
 
@@ -212,6 +243,28 @@ def _sanitize(value: str) -> str:
     if any(ch in value for ch in ("\n", "\r", "\x00")):
         raise CommandError("argument contains a control character")
     return value.strip()
+
+
+NUMERIC_ARGS = {"count", "quality", "variant", "level", "amount", "value", "radius", "x", "y", "z"}
+
+
+def _check_numeric(key: str, text: str) -> None:
+    if key not in NUMERIC_ARGS:
+        return
+    try:
+        int(text)
+    except ValueError:
+        raise CommandError(f"{key} must be a whole number, got {text!r}") from None
+
+
+def _player_ref(value: str) -> str:
+    """Normalise a bare steamid to the `Steam_<id>` form ValheimRcon resolves.
+
+    The plugin looks players up by name or by the `Steam_`-prefixed id — a bare
+    numeric id fails with "Cannot find user". The players view shows bare ids,
+    so the panel converts them; names pass through untouched.
+    """
+    return f"Steam_{value}" if value.isdigit() and len(value) == 17 else value
 
 
 def parse_players(output: str) -> list[dict]:
@@ -255,6 +308,8 @@ def catalog_for(role_can) -> list[dict]:
             "name": spec.name,
             "summary": spec.summary,
             "args": list(spec.args),
+            "options": list(spec.options),
+            "player_arg": spec.player_arg,
             "transport": spec.transport,
             "dangerous": spec.dangerous,
             "allowed": role_can(spec.capability),

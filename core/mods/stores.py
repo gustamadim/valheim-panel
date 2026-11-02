@@ -72,6 +72,8 @@ class Package:
     store: str
     deprecated: bool = False
     icon: str = ""
+    stable_version: str = ""
+    stable_download_url: str = ""
 
     @property
     def key(self) -> str:
@@ -80,12 +82,14 @@ class Package:
     def as_dict(self) -> dict:
         return {
             "full_name": self.full_name, "name": self.name, "owner": self.owner,
-            "version": self.version, "description": self.description,
+            "version": self.version, "stable_version": self.stable_version, "description": self.description,
             "categories": self.categories, "dependencies": self.dependencies,
             "download_url": self.download_url, "website_url": self.website_url,
             "file_size": self.file_size, "downloads": self.downloads,
             "date_updated": self.date_updated, "store": self.store,
             "deprecated": self.deprecated, "icon": self.icon,
+            "stable_version": self.stable_version,
+            "stable_download_url": self.stable_download_url,
         }
 
 
@@ -218,11 +222,19 @@ class StoreIndex:
             if not versions:
                 continue
             latest = max(versions, key=lambda v: _version_key(v.get("version_number", "")))
+            # Update offers prefer the newest stable release; prereleases are
+            # only surfaced once the installed version is itself a prerelease.
+            stable_pool = [v for v in versions
+                           if "-" not in (v.get("version_number") or "")]
+            stable = (max(stable_pool, key=lambda v: _version_key(v.get("version_number", "")))
+                      if stable_pool else latest)
             entries.append(Package(
                 full_name=item.get("full_name") or "",
                 name=item.get("name") or "",
                 owner=item.get("owner") or "",
                 version=latest.get("version_number") or "",
+                stable_version=stable.get("version_number") or "",
+                stable_download_url=stable.get("download_url") or "",
                 description=(latest.get("description") or "").strip(),
                 categories=item.get("categories") or [],
                 dependencies=latest.get("dependencies") or [],

@@ -38,6 +38,7 @@ CAPABILITIES: dict[str, str] = {
     "backup.restore": "admin",
     "backup.delete": "admin",
     "world.switch": "admin",
+    "world.spawn": "admin",
     "world.regenerate": "admin",
     "world.upload": "admin",
     "world.delete": "admin",

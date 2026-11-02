@@ -2,9 +2,11 @@
 from .classify import Verdict, classify, policy_decision
 from .install import Installed, ModError, ModManager
 from .stores import STORES, Package, StoreError, StoreIndex
+from .updates import candidate, check_updates
 
 __all__ = [
     "Verdict", "classify", "policy_decision",
     "Installed", "ModError", "ModManager",
     "STORES", "Package", "StoreError", "StoreIndex",
+    "check_updates", "candidate",
 ]

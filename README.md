@@ -32,10 +32,14 @@ It talks to the server over three channels that are already available:
 - **Player lists** — admin, banned, permitted, with SteamID64 validation
 - **Backups** — create, download, delete, restore with a pre-restore snapshot
 - **Worlds** — regenerate, delete inactive, download; the active world is protected
-- **Command console** — a 25-command catalog plus an admin-only free-form RCON box
+- **Command console** — a 26-command catalog plus an admin-only free-form RCON box;
+  `give`/`spawn` speak the RCON plugin's real flag syntax (`-count`, `-quality`,
+  `-variant`) and resolve players by name or `Steam_<id>`
 - **Live world** — positions, biome, progression keys, deaths, event timeline
 - **Mod manager** — Thunderstore + Hexium in one merged view, dependency
-  resolution, crossplay compatibility classification, quarantine, rollback
+  resolution, crossplay compatibility classification, quarantine, rollback,
+  and an update checker (stable channel by default; per-mod and update-all,
+  snapshot-protected)
 - **Gameplay helpers** — autofeed and raid filter, hot-reloaded without a restart
 - **Live map** — pan/zoom canvas map with fog of war, portals, ships, boss altars
 - **Discord bridge** — optional; lets a Discord bot query and control the server
@@ -122,6 +126,25 @@ A `server-only` tag is **not** a guarantee: a server mod that injects a network
 message console clients cannot parse will still break them, and no server-side
 signal reveals it. Quarantine catches crashes, load failures and disconnect storms
 — not silent client-side breakage.
+
+## Mod updates
+
+The Mods tab compares every managed mod against the merged store index and
+reports the newest version per package. The offer prefers the newest **stable**
+release; prereleases are only surfaced once the installed version is itself a
+prerelease (same-channel behaviour), and a "beta exists" tag says so when one
+is waiting. Pinned mods and custom-URL imports are never updated automatically.
+
+Updating stages the new archive, validates it, takes a pre-update snapshot,
+removes the old file set (a leftover DLL from an older build would keep
+loading), moves the new files in, and re-runs the crossplay classification — a
+client-required upgrade with crossplay on needs the same explicit
+acknowledgement installing does. A disabled or quarantined mod stays disabled
+across the update. Dependencies the new version newly needs are installed in
+the same transaction, and a batch updates dependencies before their dependents.
+Partial failures are reported per mod; any snapshot can roll the whole set back.
+Every path ends with `needs_restart`: BepInEx only reads the plugins directory
+at startup.
 
 ## Security notes
 

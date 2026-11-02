@@ -225,6 +225,7 @@
         <button class="btn" id="cmd-run">Run</button>
       </div>
       <div id="cmd-args" class="cmdargs"></div>
+      <datalist id="cmd-players"></datalist>
       <div class="formerr" id="cmd-msg"></div>
       <pre id="cmd-out" class="cmdout" hidden></pre>
     </article>
@@ -254,9 +255,27 @@
     <article class="card" id="cp-banner" hidden></article>
 
     <article class="card">
-      <h2>Installed <span class="count" id="mod-count"></span></h2>
+      <h2>Installed <span class="count" id="mod-count"></span> <span class="tag good" id="mod-update-badge" hidden></span></h2>
       <div id="mod-installed" class="modlist"></div>
       <p class="hint" id="mod-unmanaged"></p>
+    </article>
+
+    <article class="card" id="mod-updates-card">
+      <h2>Updates <span class="count" id="mod-updates-count"></span></h2>
+      <div class="quickrow">
+        <button class="ghost" id="mod-check-updates">Check for updates</button>
+        <button class="btn" id="mod-update-all" hidden>Update all</button>
+        <span class="muted" id="mod-store-age"></span>
+      </div>
+      <div id="mod-updates" class="modlist"></div>
+      <div class="formerr" id="mod-updates-msg"></div>
+      <p class="hint">
+        Compared against the merged Thunderstore + Hexium index. Prereleases are
+        only offered once you are already on one. Pinned mods and custom-URL
+        imports are never updated automatically. Updating replaces the mod's
+        files — a snapshot is taken first — and the server needs a restart to
+        load the new version.
+      </p>
     </article>
 
     <article class="card" id="mod-quarantine-card" hidden>

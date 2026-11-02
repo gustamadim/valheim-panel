@@ -311,6 +311,117 @@ class ModManager:
         return {"files": written, "snapshot": snap_name,
                 "needs_restart": True}
 
+    # ==================================================================
+    # update
+    # ==================================================================
+    def _stage_members(self, archive: Path) -> list[tuple[str, str, Path]]:
+        """Extract an archive into a staging dir, flattened, unvalidated members refused.
+
+        Returns (kind, name, staged_path) triples. Nothing on disk is modified
+        yet — the caller decides when to swap the files in, which is what makes
+        an update atomic enough to roll back from a snapshot.
+        """
+        stamp = time.strftime('%Y%m%d-%H%M%S-%f')
+        staging = self.archive_dir / f".staging-{stamp}"
+        staging.mkdir(parents=True, exist_ok=True)
+        written: list[tuple[str, str, Path]] = []
+        try:
+            with zipfile.ZipFile(archive) as zf:
+                members = self._safe_members(zf)
+                for info in members:
+                    kind = self._classify_member(info.filename)
+                    if kind is None:
+                        continue
+                    name = Path(info.filename).name
+                    if Path(name).suffix.lower() not in (".dll", ".cfg", ".json"):
+                        continue
+                    target = staging / name
+                    with zf.open(info) as src, target.open("wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    written.append((kind, name, target))
+        except (zipfile.BadZipFile, OSError) as exc:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise ModError(f"could not stage archive: {exc}") from exc
+        if not written:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise ModError("archive contained no plugin DLLs")
+        return written
+
+    def update(self, *, full_name: str, version: str, store: str, tier: str,
+               url: str, evidence: list[str] | None = None,
+               dependencies: list[str] | None = None,
+               snapshot: bool = True) -> dict:
+        """Replace a managed mod with a newer store version.
+
+        Same rules as install: snapshot first, validate and stage the archive
+        before touching anything, then swap. A disabled or quarantined mod is
+        updated in place but stays disabled — updating must not silently
+        re-enable something the operator deliberately turned off.
+        """
+        data = self.manifest()
+        entry = data["mods"].get(full_name)
+        if entry is None:
+            raise ModError("not managed by the panel")
+        if entry.get("custom_url"):
+            raise ModError(
+                "custom-URL imports have no store version — re-import instead")
+
+        previous = entry.get("version")
+        snap_name = self.snapshot("pre-update").name if snapshot else None
+        tmp_zip = self.archive_dir / f".incoming-{time.strftime('%Y%m%d-%H%M%S-%f')}.zip"
+        staged: list[tuple[str, str, Path]] = []
+        try:
+            self._download(url, tmp_zip)
+            staged = self._stage_members(tmp_zip)
+        finally:
+            tmp_zip.unlink(missing_ok=True)
+
+        try:
+            keep_disabled = bool(entry.get("disabled")) or bool(entry.get("quarantine"))
+            # Remove the old file set first: the new version may ship fewer
+            # files, and a leftover DLL from the old build would keep loading.
+            # A quarantined mod's files live in quarantine/, so that is searched
+            # too — otherwise the old build survives the "update".
+            removed: list[str] = []
+            for fname in entry.get("files") or []:
+                for base in (self.plugins, self.patchers, self.config_dir,
+                             self.quarantine):
+                    target = base / fname
+                    if target.is_file():
+                        target.unlink()
+                        removed.append(fname)
+                        break
+            files: list[str] = []
+            for kind, name, src in staged:
+                dest_dir = self.quarantine if keep_disabled else (
+                    self.plugins if kind == "plugins" else (
+                        self.patchers if kind == "patchers" else self.config_dir))
+                shutil.move(str(src), str(dest_dir / name))
+                files.append(name)
+        except Exception:
+            # The snapshot holds the pre-update files *and* manifest, so this
+            # returns the whole managed set to its previous state.
+            if snap_name:
+                try:
+                    self.restore_snapshot(snap_name)
+                except ModError:
+                    pass
+            raise
+        finally:
+            if staged:
+                shutil.rmtree(staged[0][2].parent, ignore_errors=True)
+
+        entry.update({
+            "version": version, "store": store, "tier": tier,
+            "files": files, "installed_at": time.time(),
+            "dependencies": dependencies or [], "evidence": evidence or [],
+        })
+        self._save_manifest(data)
+
+        return {"files": files, "removed": removed, "snapshot": snap_name,
+                "needs_restart": True, "previous_version": previous,
+                "version": version}
+
     def _extract_into(self, archive: Path) -> list[str]:
         written: list[str] = []
         try:

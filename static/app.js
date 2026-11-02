@@ -63,7 +63,7 @@ async function post(url, body) {
   });
   if (r.status === 401) { location.href = '/login'; throw new Error('unauthorized'); }
   const d = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+  if (!r.ok) { const e = new Error(d.error || ('HTTP ' + r.status)); e.body = d; throw e; }
   return d;
 }
 
@@ -715,6 +715,7 @@ async function loadPlayers() {
     if (!r.ok) return;
     const d = await r.json();
     const list = d.players || [];
+    fillPlayerList(list, d.rcon_players || []);
     $('#cp-count').textContent = d.agent_available
       ? `${list.length}`
       : '(agent down)';
@@ -775,15 +776,46 @@ function renderArgs() {
   const sel = $('#cmd-select').value;
   const spec = cmdCatalog.find(c => c.name === sel);
   if (!spec) return;
-  (spec.args || []).forEach(arg => {
+  (spec.args || []).forEach((arg, i) => {
+    const isPlayer = spec.player_arg && i === 0;
     const wrap = el('div', 'f');
-    wrap.appendChild(el('label', undefined, arg));
+    wrap.appendChild(el('label', undefined,
+      arg + (isPlayer ? ' (name or steamid)' : '')));
     const inp = el('input');
     inp.type = 'text';
     inp.dataset.arg = arg;
-    inp.placeholder = arg;
+    inp.placeholder = isPlayer ? 'name or steamid' : arg;
+    if (isPlayer) inp.setAttribute('list', 'cmd-players');
     wrap.appendChild(inp);
     box.appendChild(wrap);
+  });
+  (spec.options || []).forEach(opt => {
+    const wrap = el('div', 'f');
+    wrap.appendChild(el('label', undefined, `-${opt} (optional)`));
+    const inp = el('input');
+    inp.type = 'text';
+    inp.dataset.arg = opt;
+    inp.placeholder = opt;
+    wrap.appendChild(inp);
+    box.appendChild(wrap);
+  });
+}
+
+/* online players for the give/teleport/heal/damage/findPlayer datalist */
+function fillPlayerList(agent, rcon) {
+  const dl = $('#cmd-players');
+  if (!dl) return;
+  dl.textContent = '';
+  const seen = new Set();
+  const add = v => {
+    v = (v || '').trim();
+    if (!v || seen.has(v.toLowerCase())) return;
+    seen.add(v.toLowerCase());
+    dl.appendChild(el('option')).value = v;
+  };
+  [...agent, ...rcon].forEach(p => {
+    add(p.name || p.character);
+    add(p.steamid || p.steam_id);
   });
 }
 
@@ -1071,9 +1103,12 @@ async function loadEvents() {
 
 /* ---------- mods ---------- */
 let modInstalled = [];
+let modUpdates = null;
 
 async function loadMods() {
   await Promise.all([loadInstalled(), loadSnapshots(), loadConfigList(), loadGameplay()]);
+  await loadUpdates();
+  loadInstalled(); // second pass: update badges now that modUpdates is loaded
 }
 
 function tierBadge(tier) {
@@ -1114,6 +1149,12 @@ async function loadInstalled() {
     }
 
     $('#mod-count').textContent = `${modInstalled.length}`;
+    const ub = $('#mod-update-badge');
+    if (ub) {
+      const n = (d.updates && d.updates.available) || 0;
+      ub.hidden = !n;
+      ub.textContent = n ? `${n} update${n > 1 ? 's' : ''}` : '';
+    }
     const unmanaged = d.unmanaged || [];
     $('#mod-unmanaged').textContent = unmanaged.length
       ? `Not managed by the panel: ${unmanaged.join(', ')}`
@@ -1136,9 +1177,22 @@ async function loadInstalled() {
       if ((m.dependencies || []).length) {
         left.appendChild(el('span', 'mdeps', `+${m.dependencies.length} deps`));
       }
+      const up = (modUpdates?.mods || []).find(u => u.full_name === m.full_name);
+      if (up && up.status === 'update') {
+        left.appendChild(el('span', 'tag good',
+          `${up.installed_version} → ${up.latest_version}`));
+        if (up.prerelease_available) left.appendChild(el('span', 'tag', 'beta exists'));
+      } else if (up && up.status === 'missing') {
+        left.appendChild(el('span', 'tag bad', 'not in stores'));
+      }
       row.appendChild(left);
 
       const right = el('div', 'uright');
+      if (can('mod.install') && up && up.actionable) {
+        const ub2 = el('button', 'ghost small', 'update');
+        ub2.addEventListener('click', () => updateMod(m.full_name));
+        right.appendChild(ub2);
+      }
       if (can('mod.install')) {
         const t = el('button', 'ghost small', m.disabled ? 'enable' : 'disable');
         t.addEventListener('click', () => modAction(m.disabled ? 'enable' : 'disable',
@@ -1213,6 +1267,149 @@ async function modAction(action, body) {
     return null;
   }
 }
+
+/* ---------- mod updates ---------- */
+async function loadUpdates() {
+  try {
+    const r = await fetch('/api/v1/mods/updates', {cache: 'no-store'});
+    if (!r.ok) return;
+    const d = await r.json();
+    modUpdates = d;
+    renderUpdates(d);
+  } catch (_) { /* ignore */ }
+}
+
+async function checkUpdates() {
+  const msg = $('#mod-updates-msg');
+  msg.textContent = 'refreshing store index…';
+  msg.style.color = 'var(--dim)';
+  try {
+    const r = await fetch('/api/v1/mods/updates?refresh=1', {cache: 'no-store'});
+    const d = await r.json();
+    if (!r.ok) { msg.textContent = d.error || ('HTTP ' + r.status); msg.style.color = 'var(--bad)'; return; }
+    modUpdates = d;
+    if (d.store && d.store.refreshing) {
+      msg.textContent = 'store index refreshing…';
+      msg.style.color = 'var(--dim)';
+      setTimeout(checkUpdates, 4000);
+      return;
+    }
+    renderUpdates(d);
+    loadInstalled();
+  } catch (e) { msg.textContent = e.message; msg.style.color = 'var(--bad)'; }
+}
+
+function renderUpdates(d) {
+  const box = $('#mod-updates');
+  const msg = $('#mod-updates-msg');
+  const allBtn = $('#mod-update-all');
+  if (!box) return;
+  box.textContent = '';
+  msg.textContent = '';
+  const st = d.store || {};
+  $('#mod-store-age').textContent = st.packages
+    ? `index: ${(st.packages || 0).toLocaleString()} packages` +
+      (st.age_seconds != null ? ` · ${Math.round(st.age_seconds / 60)}m old` : '')
+    : 'index empty';
+  const rows = (d.mods || []).filter(m => m.status !== 'current');
+  const n = (d.updates || []).length;
+  if (!st.packages) {
+    msg.textContent = 'store index is cold — warming in the background; check again shortly';
+    msg.style.color = 'var(--dim)';
+  }
+  if (!rows.length) {
+    box.appendChild(el('div', 'empty', 'Everything is current.'));
+    allBtn.hidden = true;
+    return;
+  }
+  rows.forEach(r => {
+    const row = el('div', 'modrow');
+    const left = el('div', 'mleft');
+    left.appendChild(el('span', 'mname', r.full_name));
+    if (r.status === 'update') {
+      left.appendChild(el('span', 'mver', `${r.installed_version} → ${r.latest_version}`));
+      if (r.deprecated) left.appendChild(el('span', 'tag bad', 'deprecated upstream'));
+      if (r.prerelease_available) left.appendChild(el('span', 'tag', 'beta exists'));
+    } else if (r.status === 'missing') {
+      left.appendChild(el('span', 'mver', String(r.installed_version)));
+      left.appendChild(el('span', 'tag bad', 'gone from stores'));
+    } else if (r.status === 'ahead') {
+      left.appendChild(el('span', 'mver', String(r.installed_version)));
+      left.appendChild(el('span', 'tag', 'ahead of index'));
+    } else if (r.status === 'custom') {
+      left.appendChild(el('span', 'mver', String(r.installed_version)));
+      left.appendChild(el('span', 'tag', 'custom import'));
+    }
+    if (r.pinned) left.appendChild(el('span', 'tag', 'pinned'));
+    if (r.disabled) left.appendChild(el('span', 'tag bad', 'disabled'));
+    (r.dependency_updates || []).forEach(du => {
+      left.appendChild(el('span', 'mdeps', `dep ${du.full_name} ${du.installed} → ${du.latest}`));
+    });
+    if (r.note) left.appendChild(el('span', 'mdeps', r.note));
+    row.appendChild(left);
+    const right = el('div', 'uright');
+    if (r.actionable && can('mod.install')) {
+      const b = el('button', 'ghost small', 'update');
+      b.addEventListener('click', () => updateMod(r.full_name));
+      right.appendChild(b);
+    }
+    row.appendChild(right);
+    box.appendChild(row);
+  });
+  const cnt = $('#mod-updates-count');
+  if (cnt) cnt.textContent = n ? `${n} available` : '';
+  allBtn.hidden = !(n && can('mod.install'));
+  if (n) allBtn.textContent = `Update all (${n})`;
+}
+
+async function updateMod(name, opts = {}) {
+  try {
+    const d = await post('/api/v1/mods/update',
+      {name, acknowledge: !!opts.acknowledge, force: !!opts.force});
+    alert(`Updated ${name}${(d.installed_deps || []).length ? ' + dependencies' : ''} ` +
+          `${d.previous_version || ''} → ${d.version || ''}.\n\nRestart the server to load it.`);
+    loadInstalled();
+    loadUpdates();
+    return d;
+  } catch (e) {
+    const b = e.body || {};
+    if (b.requires_acknowledgement) {
+      if (!confirm(`${e.message}\n\nUpdate anyway? Console players will be unable to join.`)) return null;
+      return updateMod(name, {...opts, acknowledge: true});
+    }
+    if (b.requires_force) {
+      if (!confirm(`${e.message}\n\nUpdate anyway?`)) return null;
+      return updateMod(name, {...opts, force: true});
+    }
+    alert('Failed: ' + e.message);
+    return null;
+  }
+}
+
+async function updateAll(acknowledge) {
+  const names = (modUpdates && modUpdates.updates) || [];
+  if (!names.length) { alert('No updates available.'); return; }
+  if (!acknowledge) {
+    if (!confirm(`Update ${names.length} mods?\n\n${names.join('\n')}\n\nA snapshot is taken first. Restart afterwards to load the new versions.`)) return;
+  }
+  try {
+    const d = await post('/api/v1/mods/update-all', {acknowledge: !!acknowledge});
+    const lines = (d.updated || []).map(u => `${u.name} ${u.from} → ${u.to}`);
+    alert(`${d.message || 'done'}\n\n${lines.join('\n')}` +
+          ((d.failed || []).length ? `\n\nFailed: ${d.failed.map(f => f.name).join(', ')}` : ''));
+    loadInstalled();
+    loadUpdates();
+  } catch (e) {
+    if (e.body && e.body.requires_acknowledgement) {
+      if (!confirm(`${e.message}\n\nUpdate anyway? Console players will be unable to join.`)) return;
+      return updateAll(true);
+    }
+    alert('Failed: ' + e.message);
+  }
+}
+
+$('#mod-check-updates').addEventListener('click', checkUpdates);
+$('#mod-update-all').addEventListener('click', () => updateAll(false));
 
 /* search */
 async function searchMods() {

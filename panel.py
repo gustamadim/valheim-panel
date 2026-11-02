@@ -31,7 +31,8 @@ from core.events import EventPoller  # noqa: E402
 from core.gameplay import Gameplay, GameplayError, reload_mode_from_log  # noqa: E402
 from core.logs import read_probe  # noqa: E402
 from core.mapdata import MapData, MapError  # noqa: E402
-from core.mods import ModError, ModManager, StoreError, StoreIndex, classify, policy_decision  # noqa: E402
+from core.mods import ModError, ModManager, StoreError, StoreIndex, candidate, check_updates, classify, policy_decision  # noqa: E402
+from core.mods.stores import _version_key  # noqa: E402
 from core.ops import Ops, OpsError  # noqa: E402
 from core.state import StateProvider  # noqa: E402
 from core.supervisor import Supervisor, SupervisorError  # noqa: E402
@@ -48,6 +49,30 @@ commands = CommandRunner(state.agent, state.rcon)
 poller = EventPoller(state.agent, db, interval=2.0)
 stores = StoreIndex(cfg.config_dir / "cache" / "store-index")
 mods = ModManager(cfg.bepinex_config_dir)
+
+
+def _dep_first(rows: list[dict]) -> list[dict]:
+    """Order an update batch so dependencies update before their dependents.
+
+    A batch that updated a dependent before its dependency would leave the
+    newest side momentarily unmatched. Everything converges only after the
+    restart, but ordering removes even that window.
+    """
+    by_key = {r["full_name"].lower(): r for r in rows}
+    ordered: list[dict] = []
+    seen: set[str] = set()
+
+    def visit(key: str) -> None:
+        if key in seen or key not in by_key:
+            return
+        seen.add(key)
+        for dep in by_key[key].get("dependencies") or []:
+            visit(dep.lower())
+        ordered.append(by_key[key])
+
+    for r in rows:
+        visit(r["full_name"].lower())
+    return ordered
 gameplay = Gameplay(cfg.bepinex_config_dir)
 mapdata = MapData(state.agent, cfg.config_dir / "cache" / "map")
 
@@ -264,6 +289,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._mods_snapshots(session)
             if path == "/api/v1/mods/config":
                 return self._mods_config_read(session, query)
+            if path == "/api/v1/mods/updates":
+                return self._mods_updates(session, query)
             if path == "/api/v1/gameplay":
                 return self._gameplay_state(session)
             if path == "/api/v1/map":
@@ -966,6 +993,18 @@ class Handler(BaseHTTPRequestHandler):
             entry["policy"] = policy_decision(
                 type("V", (), {"tier": m.tier})(), crossplay)
             out.append(entry)
+        # Best-effort update summary: the mods page shows a badge without an
+        # extra round trip. A cold or broken index must never break the page.
+        try:
+            upd = check_updates(mods, stores)
+            updates_summary = {
+                "available": len(upd["updates"]),
+                "names": upd["updates"],
+                "store_age_seconds": (upd.get("store") or {}).get("age_seconds"),
+            }
+        except Exception:  # noqa: BLE001 - badge is decorative, never fatal
+            updates_summary = None
+
         return self._json(200, {
             "installed": out,
             "unmanaged": mods.unmanaged_files(),
@@ -974,6 +1013,7 @@ class Handler(BaseHTTPRequestHandler):
             "store": stores.status(),
             "can_install": roles.can(session.role, "mod.install"),
             "can_quarantine": roles.can(session.role, "mod.quarantine"),
+            "updates": updates_summary,
         })
 
     def _mods_search(self, session: auth.Session, query: dict) -> None:
@@ -1073,6 +1113,8 @@ class Handler(BaseHTTPRequestHandler):
             "config-write": "mod.install",
             "refresh": "mod.install",
             "import-url": "mod.install",
+            "update": "mod.install",
+            "update-all": "mod.install",
         }.get(action)
         if capability is None:
             return self._json(404, {"error": "unknown action"})
@@ -1124,6 +1166,10 @@ class Handler(BaseHTTPRequestHandler):
                 stores.refresh(background=True)
                 self._audit(session, "mod.refresh_index")
                 return self._json(200, {"ok": True, "warming": True})
+            if action == "update":
+                return self._mods_update(session, body)
+            if action == "update-all":
+                return self._mods_update_all(session, body)
         except ModError as exc:
             self._audit(session, f"mod.{action}", body.get("name"),
                         {"error": str(exc)}, ok=False)
@@ -1226,6 +1272,172 @@ class Handler(BaseHTTPRequestHandler):
                                 "files": result["files"],
                                 "snapshot": result["snapshot"],
                                 "needs_restart": True})
+
+    # ---- mod updates ----------------------------------------------------
+    def _mods_updates(self, session: auth.Session, query: dict) -> None:
+        self._require("view.mods")
+        if (query.get("refresh", [""])[0] or "").lower() in ("1", "true"):
+            stores.refresh(background=True)
+        try:
+            payload = check_updates(mods, stores)
+        except (StoreError, ModError) as exc:
+            return self._json(502, {"error": str(exc)})
+        payload["can_update"] = roles.can(session.role, "mod.install")
+        payload["crossplay"] = self._crossplay_enabled()
+        return self._json(200, payload)
+
+    def _prepare_update(self, full_name: str, body: dict) -> dict:
+        """Resolve and validate one update without touching the server yet.
+
+        Returns {"ok": True, pkg, entry, verdict} or {"ok": False, error, ...}
+        with structured flags the UI can act on: requires_acknowledgement for a
+        crossplay-dangerous upgrade, requires_force for a pinned mod.
+        """
+        stores.ensure_loaded()
+        pkg = stores.get(full_name)
+        if pkg is None:
+            return {"ok": False, "error": "package not found in either store index"}
+
+        entry = None
+        for m in mods.installed():
+            if m.full_name.lower() == full_name.lower():
+                entry = m
+                break
+        if entry is None:
+            return {"ok": False, "error": "not managed by the panel"}
+        if entry.custom_url:
+            return {"ok": False,
+                    "error": "custom-URL imports have no store version — re-import to replace"}
+        cand_version, _cand_url = candidate(pkg, entry.version)
+        if _version_key(entry.version) >= _version_key(cand_version):
+            return {"ok": False,
+                    "error": f"already up to date (installed {entry.version}, "
+                             f"store {cand_version})"}
+        if entry.pinned and not body.get("force"):
+            return {"ok": False, "requires_force": True,
+                    "error": f"pinned at {entry.version} — update held back"}
+
+        verdict = classify(pkg.categories, pkg.description)
+        policy = policy_decision(verdict, self._crossplay_enabled())
+        if policy["level"] == "danger" and not body.get("acknowledge"):
+            return {"ok": False, "requires_acknowledgement": True,
+                    "error": policy["reason"], "verdict": verdict.as_dict()}
+        return {"ok": True, "pkg": pkg, "entry": entry, "verdict": verdict,
+                "candidate": cand_version}
+
+    def _apply_update(self, prep: dict, snapshot_name: str | None) -> dict:
+        """Install the new version, adding any dependencies it newly needs."""
+        pkg, verdict = prep["pkg"], prep["verdict"]
+        managed = {m.full_name.lower() for m in mods.installed()}
+        installed_now: list[str] = []
+        deps = stores.resolve_dependencies(pkg.full_name)
+        for dep in deps:
+            if dep.full_name.lower() in managed:
+                continue
+            dep_verdict = classify(dep.categories, dep.description)
+            mods.install(
+                full_name=dep.full_name, version=dep.version, store=dep.store,
+                tier=dep_verdict.tier, url=dep.download_url,
+                evidence=dep_verdict.evidence, dependencies=[], snapshot=False,
+            )
+            installed_now.append(dep.full_name)
+        cand_version, cand_url = candidate(pkg, prep["entry"].version)
+        result = mods.update(
+            full_name=pkg.full_name, version=cand_version, store=pkg.store,
+            tier=verdict.tier, url=cand_url,
+            evidence=verdict.evidence,
+            dependencies=[d.full_name for d in deps], snapshot=False,
+        )
+        result["snapshot"] = snapshot_name
+        result["installed_deps"] = installed_now
+        return result
+
+    def _mods_update(self, session: auth.Session, body: dict) -> None:
+        name = (body.get("name") or "").strip()
+        if not name:
+            return self._json(400, {"error": "name required"})
+        prep = self._prepare_update(name, body)
+        if not prep.get("ok"):
+            if prep.get("requires_acknowledgement"):
+                self._audit(session, "mod.update", name,
+                            {"blocked": "crossplay-dangerous upgrade"}, ok=False)
+                return self._json(409, {"error": prep["error"],
+                                        "requires_acknowledgement": True,
+                                        "verdict": prep["verdict"]})
+            self._audit(session, "mod.update", name,
+                        {"error": prep["error"]}, ok=False)
+            return self._json(409, {"error": prep["error"],
+                                    "requires_force": bool(prep.get("requires_force"))})
+
+        snap = mods.snapshot("pre-update").name
+        try:
+            result = self._apply_update(prep, snap)
+        except (ModError, StoreError) as exc:
+            try:
+                mods.restore_snapshot(snap)
+            except ModError:
+                pass
+            self._audit(session, "mod.update", name,
+                        {"error": str(exc), "snapshot": snap}, ok=False)
+            return self._json(409, {"error": str(exc), "snapshot": snap})
+
+        self._audit(session, "mod.update", name, {
+            "from": prep["entry"].version, "to": prep["candidate"],
+            "deps": result.get("installed_deps") or [], "snapshot": snap})
+        log(f"{session.user} updated {name} {prep['entry'].version} -> {prep['candidate']}")
+        return self._json(200, {"ok": True, **result})
+
+    def _mods_update_all(self, session: auth.Session, body: dict) -> None:
+        report = check_updates(mods, stores)
+        targets = _dep_first([r for r in report["mods"] if r.get("actionable")])
+        if not targets:
+            return self._json(200, {"ok": True, "updated": [], "failed": [],
+                                    "message": "nothing to update"})
+
+        if not body.get("acknowledge"):
+            danger = []
+            for t in targets:
+                pkg = stores.get(t["full_name"])
+                if pkg is None:
+                    continue
+                verdict = classify(pkg.categories, pkg.description)
+                if policy_decision(verdict, self._crossplay_enabled())["level"] == "danger":
+                    danger.append(t["full_name"])
+            if danger:
+                self._audit(session, "mod.update_all",
+                            {"blocked": danger}, ok=False)
+                return self._json(409, {
+                    "error": "some updates need a client install: " + ", ".join(danger),
+                    "requires_acknowledgement": True, "names": danger})
+
+        snap = mods.snapshot("pre-update").name
+        updated: list[dict] = []
+        failed: list[dict] = []
+        for t in targets:
+            name = t["full_name"]
+            prep = self._prepare_update(name, {"acknowledge": True})
+            if not prep.get("ok"):
+                failed.append({"name": name, "error": prep.get("error", "skipped")})
+                continue
+            try:
+                result = self._apply_update(prep, snap)
+                updated.append({"name": name, "from": prep["entry"].version,
+                                "to": prep["candidate"],
+                                "deps": result.get("installed_deps") or []})
+            except (ModError, StoreError) as exc:
+                failed.append({"name": name, "error": str(exc)})
+
+        self._audit(session, "mod.update_all", {
+            "updated": [u["name"] for u in updated],
+            "failed": failed, "snapshot": snap})
+        log(f"{session.user} batch-updated mods: {[u['name'] for u in updated]}"
+            + (f" failed={failed}" if failed else ""))
+        return self._json(200, {
+            "ok": True, "updated": updated, "failed": failed, "snapshot": snap,
+            "needs_restart": bool(updated),
+            "message": f"updated {len(updated)}"
+                       + (f", {len(failed)} failed" if failed else "")
+                       + " — restart to load"})
 
     # ---- gameplay helpers ----------------------------------------------
     def _raid_events(self) -> list[str]:
