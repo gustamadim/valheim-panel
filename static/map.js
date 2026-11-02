@@ -349,6 +349,39 @@ function fitMap() {
   mapState.view.scale = Math.min(cv.width, cv.height);
   mapState.view.ox = (cv.width - mapState.view.scale) / 2;
   mapState.view.oy = (cv.height - mapState.view.scale) / 2;
+  mapState.fitScale = mapState.view.scale;
+  updateZoomLabel();
+}
+
+/* Zoom: wider range than the 2048px source (deep zoom upscales, but that is
+ * the point — reading coordinates and label positions needs it), finer wheel
+ * steps, and buttons/double-click for precision and touch. */
+const ZOOM_MIN = 120, ZOOM_MAX = 40000, ZOOM_WHEEL = 1.12, ZOOM_BUTTON = 1.3;
+
+function updateZoomLabel() {
+  const lab = document.getElementById('map-zoom-level');
+  const v = mapState.view;
+  if (!lab || !v.scale) return;
+  const fit = mapState.fitScale || v.scale;
+  lab.textContent = Math.max(1, Math.round((v.scale / fit) * 100)) + '%';
+}
+
+function zoomAt(mx, my, factor) {
+  const dpr = window.devicePixelRatio || 1;
+  const v = mapState.view;
+  const newScale = Math.max(ZOOM_MIN * dpr, Math.min(ZOOM_MAX * dpr, v.scale * factor));
+  const k = newScale / v.scale;
+  v.ox = mx - (mx - v.ox) * k;
+  v.oy = my - (my - v.oy) * k;
+  v.scale = newScale;
+  updateZoomLabel();
+  drawMap();
+}
+
+function zoomCenter(factor) {
+  const cv = mapState.canvas;
+  if (!cv) return;
+  zoomAt(cv.width / 2, cv.height / 2, factor);
 }
 
 function worldToScreen(x, z) {
@@ -518,16 +551,14 @@ function bindMapControls() {
     const rect = cv.getBoundingClientRect();
     const mx = (e.clientX - rect.left) * dpr;
     const my = (e.clientY - rect.top) * dpr;
-
-    const factor = e.deltaY < 0 ? 1.18 : 1 / 1.18;
-    const v = mapState.view;
-    const newScale = Math.max(120 * dpr, Math.min(12000 * dpr, v.scale * factor));
-    const k = newScale / v.scale;
-    v.ox = mx - (mx - v.ox) * k;
-    v.oy = my - (my - v.oy) * k;
-    v.scale = newScale;
-    drawMap();
+    zoomAt(mx, my, e.deltaY < 0 ? ZOOM_WHEEL : 1 / ZOOM_WHEEL);
   }, { passive: false });
+
+  cv.addEventListener('dblclick', e => {
+    const dpr = window.devicePixelRatio || 1;
+    const rect = cv.getBoundingClientRect();
+    zoomAt((e.clientX - rect.left) * dpr, (e.clientY - rect.top) * dpr, 2);
+  });
 
   cv.addEventListener('mousemove', e => {
     if (dragging) return;
@@ -571,6 +602,12 @@ function bindMapControls() {
 
   const reset = document.getElementById('map-reset');
   if (reset) reset.addEventListener('click', () => { fitMap(); drawMap(); });
+
+  // ---- zoom buttons ----
+  const zout = document.getElementById('map-zoom-out');
+  if (zout) zout.addEventListener('click', () => zoomCenter(1 / ZOOM_BUTTON));
+  const zin = document.getElementById('map-zoom-in');
+  if (zin) zin.addEventListener('click', () => zoomCenter(ZOOM_BUTTON));
 
   // ---- text size ----
   const applyTextStep = () => {

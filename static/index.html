@@ -179,6 +179,12 @@
           <label><input type="checkbox" id="map-scope-all"> show all</label>
         </span>
         <span class="textsize">
+          <span class="muted">zoom</span>
+          <button class="ghost small" id="map-zoom-out" title="zoom out">−</button>
+          <b id="map-zoom-level">100%</b>
+          <button class="ghost small" id="map-zoom-in" title="zoom in">+</button>
+        </span>
+        <span class="textsize">
           <span class="muted">text</span>
           <button class="ghost small" id="map-text-smaller" title="smaller labels">−</button>
           <b id="map-text-label">small</b>
@@ -193,7 +199,7 @@
     </div>
     <p class="hint" id="map-fognote" hidden></p>
     <p class="hint">
-      Drag to pan, scroll to zoom. The fog shows what the cartography tables and
+      Drag to pan, scroll or double-click to zoom. The fog shows what the cartography tables and
       player positions actually reveal — so it fills in as people play and share
       their maps.
     </p>
