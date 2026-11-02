@@ -15,44 +15,13 @@ stopped game server or an unreachable agent must not kill the panel.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import threading
 import time
 import traceback
 
 from .agent import Agent, AgentError
-from .db import Database
-
-
-def _dedupe(kind: str, ev: dict) -> str:
-    """Content hash for an event.
-
-    Deliberately excludes the sequence number so a replay after a restart maps to
-    the same row, and includes the timestamp so two genuinely separate events
-    with the same actor are both kept.
-    """
-    parts = [
-        kind,
-        str(ev.get("at") or ev.get("time") or ev.get("timestamp") or ""),
-        str(ev.get("player") or ev.get("name") or ev.get("character") or ""),
-        str(ev.get("character") or ""),
-        str(ev.get("biome") or ""),
-        str(ev.get("type") or ""),
-    ]
-    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:32]
-
-
-def _position(ev: dict) -> str | None:
-    pos = ev.get("position") or ev.get("pos")
-    if isinstance(pos, dict):
-        try:
-            return f"{pos.get('x')},{pos.get('y')},{pos.get('z')}"
-        except Exception:  # noqa: BLE001
-            return None
-    if isinstance(pos, (list, tuple)) and len(pos) >= 3:
-        return f"{pos[0]},{pos[1]},{pos[2]}"
-    return None
+from .db import Database, event_dedupe, extract_event_fields
 
 
 def _epoch(ev: dict, fallback: float) -> float:
@@ -128,18 +97,23 @@ class EventPoller:
                 "death": "player.death", "command": "command",
             }.get(kind, kind)
 
-            actor = ev.get("player") or ev.get("name") or ev.get("actor")
-            character = ev.get("character") or ev.get("character_id")
+            # The agent nests the useful fields inside `data`; the envelope only
+            # carries seq/kind/at. Command events have no actor, so a name there
+            # would be the verb, not a person.
+            fields = extract_event_fields(ev)
+            if kind == "command":
+                fields["actor"] = None
+
             inserted = self.db.add_event(
-                dedupe=_dedupe(kind, ev),
+                dedupe=event_dedupe(kind, ev),
                 kind=kind,
                 source_seq=ev.get("seq") if isinstance(ev.get("seq"), int) else None,
                 at=_epoch(ev, now),
-                day=ev.get("day") if isinstance(ev.get("day"), int) else None,
-                biome=ev.get("biome"),
-                actor=str(actor) if actor else None,
-                character=str(character) if character else None,
-                position=_position(ev),
+                day=fields["day"],
+                biome=fields["biome"],
+                actor=fields["actor"],
+                character=fields["character"],
+                position=fields["position"],
                 detail=json.dumps(ev, default=str)[:2000],
             )
             if inserted:

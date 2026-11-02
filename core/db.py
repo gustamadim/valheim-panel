@@ -8,6 +8,7 @@ itself; we keep transactions small rather than holding a global lock.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -76,6 +77,68 @@ CREATE TABLE IF NOT EXISTS game_events (
 CREATE INDEX IF NOT EXISTS game_events_kind ON game_events(kind, at DESC);
 CREATE INDEX IF NOT EXISTS game_events_at ON game_events(at DESC);
 """
+
+
+def extract_event_fields(ev: dict) -> dict:
+    """Pull the fields the panel stores out of an agent event payload.
+
+    The agent's event ring nests everything meaningful inside `data`; the envelope
+    carries only `seq`, `kind` and `at`. Read both so a flat payload would still
+    work, but prefer the nested form, which is what the agent actually sends:
+
+        {"seq": ..., "kind": "player.death", "at": "...",
+         "data": {"character_id", "player_name", "day", "biome", "x", "z", ...}}
+
+    `command` events carry the verb in `data.name`, which is not a person -- the
+    caller is expected to drop the actor for that kind.
+    """
+    data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+
+    def pick(*keys):
+        for src in (data, ev):
+            for k in keys:
+                v = src.get(k)
+                if v is not None and v != "":
+                    return v
+        return None
+
+    actor = pick("player_name", "name", "player", "actor")
+    character = pick("character_id", "character")
+    day = pick("day")
+    biome = pick("biome")
+    x, y, z = pick("x"), pick("y"), pick("z")
+
+    if x is not None and z is not None:
+        position = f"{x},{y if y is not None else 0},{z}"
+    else:
+        position = None
+
+    return {
+        "actor": str(actor) if actor is not None else None,
+        "character": str(character) if character is not None else None,
+        "day": day if isinstance(day, int) else None,
+        "biome": str(biome) if biome is not None else None,
+        "position": position,
+    }
+
+
+def event_dedupe(kind: str, ev: dict) -> str:
+    """Content hash for an event row, shared by the poller and the backfill.
+
+    Deliberately excludes the sequence number so a replay after a restart maps
+    to the same row, and includes the timestamp so two genuinely separate events
+    with the same actor are both kept. Names come from the extracted fields, so
+    a join and a leave by the same player in the same second still differ.
+    """
+    fields = extract_event_fields(ev)
+    parts = [
+        kind,
+        str(ev.get("at") or ev.get("time") or ev.get("timestamp") or ""),
+        fields["actor"] or "",
+        fields["character"] or "",
+        fields["biome"] or "",
+    ]
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:32]
 
 
 class Database:
@@ -255,13 +318,79 @@ class Database:
         return [dict(r) for r in rows]
 
     def death_summary(self) -> list[dict]:
-        """Deaths grouped by character, newest first."""
+        """Deaths grouped by character, newest first.
+
+        Groups on the display name rather than the raw character id: a leaderboard
+        of numbers nobody can read is useless, and a player's name is what the
+        question "who keeps dying" is actually about.
+        """
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT character, COUNT(*) AS deaths, MAX(at) AS last_at"
-                " FROM game_events WHERE kind='player.death' AND character IS NOT NULL"
-                " GROUP BY character ORDER BY deaths DESC").fetchall()
+                "SELECT COALESCE(actor, character) AS character,"
+                " COUNT(*) AS deaths, MAX(at) AS last_at"
+                " FROM game_events WHERE kind='player.death'"
+                " AND COALESCE(actor, character) IS NOT NULL"
+                " GROUP BY COALESCE(actor, character) ORDER BY deaths DESC").fetchall()
         return [dict(r) for r in rows]
+
+    def reindex_events(self) -> dict:
+        """Repair rows written before the poller learned that the agent nests
+        its fields inside `data`.
+
+        Reads the raw payload kept in `detail`, re-extracts actor/character/day/
+        biome/position, and fills only the columns that are still NULL -- never
+        overwriting a value that is already correct. It also recomputes the
+        dedupe hash so replays after a game restart still match existing rows.
+
+        Returns {"rows", "repaired", "hash_updated", "collisions_skipped"}.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, kind, detail FROM game_events").fetchall()
+
+        repaired = 0
+        hashes = 0
+        collisions = 0
+        for row in rows:
+            rid, kind, detail = row["id"], row["kind"], row["detail"]
+            try:
+                ev = json.loads(detail) if detail else {}
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            fields = extract_event_fields(ev)
+            if kind == "command":
+                fields["actor"] = None
+
+            for col in ("actor", "character", "day", "biome", "position"):
+                if fields[col] is None:
+                    continue
+                with self._write_lock, self._connect() as conn:
+                    cur = conn.execute(
+                        f"UPDATE game_events SET {col}=?"
+                        f" WHERE id=? AND {col} IS NULL",
+                        (fields[col], rid))
+                    conn.commit()
+                repaired += cur.rowcount
+
+            new_hash = event_dedupe(kind, ev)
+            if new_hash:
+                try:
+                    with self._write_lock, self._connect() as conn:
+                        cur = conn.execute(
+                            "UPDATE game_events SET dedupe=?"
+                            " WHERE id=? AND dedupe<>?",
+                            (new_hash, rid, new_hash))
+                        conn.commit()
+                    if cur.rowcount:
+                        hashes += 1
+                except sqlite3.IntegrityError:
+                    # A recomputed hash colliding with another row is harmless:
+                    # leave the original and move on.
+                    collisions += 1
+
+        return {"rows": len(rows), "repaired": repaired,
+                "hash_updated": hashes, "collisions_skipped": collisions}
 
     def event_count(self, kind: str | None = None) -> int:
         with self._connect() as conn:

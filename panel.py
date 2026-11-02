@@ -1480,6 +1480,17 @@ def main() -> None:
     except Exception:  # noqa: BLE001
         log("store index load failed:\n" + traceback.format_exc())
 
+    # Repair event rows written before the poller learned that the agent nests
+    # its fields inside `data`: joins, leaves and deaths had no name. Must run
+    # before the poller starts, so ring replays hash-match the repaired rows.
+    try:
+        report = db.reindex_events()
+        if report["repaired"] or report["hash_updated"]:
+            log(f"event reindex: repaired {report['repaired']}, "
+                f"hash updated {report['hash_updated']} of {report['rows']} rows")
+    except Exception:  # noqa: BLE001 - never block startup on bookkeeping
+        log("event reindex failed:\n" + traceback.format_exc())
+
     poller.start()
     log("event poller started (2s interval)")
 
