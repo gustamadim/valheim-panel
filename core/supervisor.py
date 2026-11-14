@@ -7,6 +7,7 @@ Docker socket.
 from __future__ import annotations
 
 import base64
+import http.client
 import socket
 import time
 import urllib.request
@@ -46,7 +47,12 @@ class Supervisor:
     def _call(self, method: str, *args: Any) -> Any:
         try:
             return getattr(self._proxy_for(), method)(*args)
-        except (socket.error, OSError, xmlrpc.client.ProtocolError, xmlrpc.client.Fault) as exc:
+        except (socket.error, OSError, xmlrpc.client.Error,
+                http.client.HTTPException) as exc:
+            # http.client.HTTPException matters: a request that died mid-flight
+            # leaves the cached transport in "Request-sent" state, and every
+            # later call raises CannotSendRequest. Dropping the proxy is what
+            # recovers; without it the panel 500s until it is restarted.
             self._proxy = None  # force a fresh connection next time
             raise SupervisorError(f"{method}: {exc}") from exc
 

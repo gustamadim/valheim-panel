@@ -1405,7 +1405,7 @@ class Handler(BaseHTTPRequestHandler):
                     danger.append(t["full_name"])
             if danger:
                 self._audit(session, "mod.update_all",
-                            {"blocked": danger}, ok=False)
+                            detail={"blocked": danger}, ok=False)
                 return self._json(409, {
                     "error": "some updates need a client install: " + ", ".join(danger),
                     "requires_acknowledgement": True, "names": danger})
@@ -1427,7 +1427,7 @@ class Handler(BaseHTTPRequestHandler):
             except (ModError, StoreError) as exc:
                 failed.append({"name": name, "error": str(exc)})
 
-        self._audit(session, "mod.update_all", {
+        self._audit(session, "mod.update_all", detail={
             "updated": [u["name"] for u in updated],
             "failed": failed, "snapshot": snap})
         log(f"{session.user} batch-updated mods: {[u['name'] for u in updated]}"
